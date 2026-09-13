@@ -71,13 +71,13 @@ def check_dns_mx(domain: str) -> bool:
     if DNS_AVAILABLE:
         try:
             resolver = dns.resolver.Resolver()
-            resolver.timeout = 1.5
-            resolver.lifetime = 2.0
+            resolver.timeout = 0.8
+            resolver.lifetime = 1.0
             records = resolver.resolve(domain, "MX")
             has_mx = len(records) > 0
             MX_CACHE[domain] = has_mx
             return has_mx
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.Timeout):
             MX_CACHE[domain] = False
             return False
         except Exception:

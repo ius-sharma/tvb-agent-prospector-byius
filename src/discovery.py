@@ -25,6 +25,12 @@ try:
 except ImportError:
     DNS_AVAILABLE = False
 
+try:
+    from ddgs import DDGS
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
+
 from src.tvb_context import TVB_ORBITS, TVB_HUBS, TVB_CRITERIA
 from src.validator import validate_tvb_candidate, parse_funding_amount, is_tech_platform, has_minimal_us_presence
 from src.enrichment import verify_executive_email, resolve_executive_contact, check_dns_mx
@@ -69,41 +75,81 @@ class TVBDiscoveryAgent:
         return []
 
     def extract_funding_from_text(self, text: str) -> (float, str):
-        """Extracts funding amount and original currency expression, strictly handling millions vs billions."""
-        # Check for billions first to reject mega deals
-        billion_match = re.search(r'([$€£])\s*(\d+(?:\.\d+)?)\s*(b|billion|bn)\b', text, re.IGNORECASE)
+        """Extracts funding amount and currency expression across USD, EUR, GBP, and INR Crores."""
+        if not text:
+            return 0.0, ""
+
+        # Check for billions first to reject mega rounds
+        billion_match = re.search(r'(?:([$€£])|(USD|EUR|GBP))\s*(\d+(?:\.\d+)?)\s*(b|billion|bn)\b', text, re.IGNORECASE)
         if billion_match:
-            val = float(billion_match.group(2))
-            return val * 1_000_000_000, f"{billion_match.group(1)}{val:.1f}B"
+            val = float(billion_match.group(3))
+            curr = billion_match.group(1) or "$"
+            return val * 1_000_000_000, f"{curr}{val:.1f}B"
 
-        # Match millions like £1.8m, €2.6 million, $2.5m, $3 million
-        m = re.search(r'([$€£])\s*(\d+(?:\.\d+)?)\s*(m|million|mn|k)?\b', text, re.IGNORECASE)
+        # Pattern 1: Symbol/Code followed by number and unit (e.g. $2.5M, €3 million, £1.8m, ₹25 Cr)
+        m = re.search(r'(?:([$€£₹])|(USD|EUR|GBP|INR))\s*(\d+(?:\.\d+)?)\s*(m|million|mn|k|crore|cr)?\b', text, re.IGNORECASE)
         if m:
-            curr = m.group(1)
-            val = float(m.group(2))
-            unit = (m.group(3) or "").lower()
-            
-            # Currency conversions to USD approx
-            if curr == '£':
-                usd_val = val * 1.30
-            elif curr == '€':
-                usd_val = val * 1.08
-            else:
-                usd_val = val
+            sym = m.group(1) or ""
+            code = (m.group(2) or "").upper()
+            val = float(m.group(3))
+            unit = (m.group(4) or "").lower()
 
-            if unit in ["m", "million", "mn"] or val < 100:
-                usd_amount = usd_val * 1_000_000
-                raw_str = f"{curr}{val:.1f}M"
+            # Normalize currency multiplier
+            if sym == '£' or code == 'GBP':
+                multiplier = 1.30
+                curr_label = "£"
+            elif sym == '€' or code == 'EUR':
+                multiplier = 1.08
+                curr_label = "€"
+            elif sym == '₹' or code == 'INR' or unit in ["crore", "cr"]:
+                multiplier = 0.012  # 1 INR ~ 0.012 USD; 1 Crore INR (~10M INR) ~ $120k USD
+                curr_label = "₹"
+            else:
+                multiplier = 1.00
+                curr_label = "$"
+
+            if unit in ["crore", "cr"]:
+                usd_amount = val * 10_000_000 * multiplier
+                return usd_amount, f"{curr_label}{val:.1f} Cr"
+            elif unit in ["m", "million", "mn"] or (unit == "" and 1.0 <= val <= 10.0 and (sym or code)):
+                usd_amount = val * 1_000_000 * multiplier
+                return usd_amount, f"{curr_label}{val:.1f}M"
             elif unit == "k":
-                usd_amount = usd_val * 1_000
-                raw_str = f"{curr}{val:.0f}K"
-            else:
-                usd_amount = usd_val
-                raw_str = f"{curr}{val:,.0f}"
+                usd_amount = val * 1_000 * multiplier
+                return usd_amount, f"{curr_label}{val:.0f}K"
+            elif val >= 1_000_000:
+                return val * multiplier, f"{curr_label}{val/1_000_000:.1f}M"
 
-            return usd_amount, raw_str
+        # Pattern 2: Number followed explicitly by million/mn (e.g. "raised 2.5 million", "3M in seed")
+        m2 = re.search(r'\b(\d+(?:\.\d+)?)\s*(million|mn)\b', text, re.IGNORECASE)
+        if m2:
+            val = float(m2.group(1))
+            return val * 1_000_000, f"${val:.1f}M"
 
         return 0.0, ""
+
+    def clean_company_name(self, raw_name: str) -> str:
+        """Cleans and validates scraped company name from headlines."""
+        if not raw_name:
+            return ""
+        cleaned = re.sub(r'^(?:[A-Za-z]+-based|\w+\s+(?:startup|scale-up|firm)|funding\s+alert:?|exclusive:?)\s+', '', raw_name, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'^(?:Dutch|German|French|British|Swedish|Spanish|Swiss|Italian|Indian|London(?:\'s)?|Parisian|Berlin(?:\'s)?|Scottish)\s+', '', cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'^(?:AgTech|Fintech|Medtech|Edtech|CleanTech|Healthtech|Deeptech|Insurtech|AI|SaaS|Robotics)\s+', '', cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'^(?:the|a|an)\s+', '', cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r'^(?:said|by|and|with|ceo|founder|mr\.?|ms\.?)\s+', '', cleaned, flags=re.IGNORECASE).strip()
+
+        blacklist = {
+            "what's", "whats", "here's", "heres", "how", "why", "top", "european", "weekly",
+            "roundup", "recap", "exclusive", "funding", "startup", "company", "round", "deal",
+            "investors", "ventures", "capital", "report", "news", "update", "abc", "breaking",
+            "london", "paris", "berlin", "uk", "france", "germany", "india", "europe"
+        }
+        words = cleaned.split()
+        if not words or len(cleaned) < 2 or len(cleaned) > 40:
+            return ""
+        if cleaned.lower() in blacklist or words[0].lower() in blacklist:
+            return ""
+        return cleaned
 
     def clean_founder_name(self, raw_name: str) -> str:
         """Cleans and validates that the extracted string is an actual human name."""
@@ -165,9 +211,8 @@ class TVBDiscoveryAgent:
                             if self.check_mx_quick(dom):
                                 return dom
 
-        # Fallback candidates based on company name
-        candidates = [f"{clean_comp}.com", f"{clean_comp}.ai", f"{clean_comp}.io", f"{clean_comp}.tech"]
-        for cand in candidates:
+        # Fast fallback candidates based on company name
+        for cand in [f"{clean_comp}.com", f"{clean_comp}.ai"]:
             if self.check_mx_quick(cand):
                 return cand
 
@@ -177,7 +222,161 @@ class TVBDiscoveryAgent:
         """Quick MX record check using unified enrichment validation."""
         return check_dns_mx(domain)
 
-    def crawl_live_feed_deals(self, target_orbit: Optional[str] = None, progress_callback=None) -> List[Dict[str, Any]]:
+    def search_live_web_deals(
+        self,
+        target_orbit: Optional[str] = None,
+        target_hub: Optional[str] = None,
+        max_deals: int = 8,
+        progress_callback=None
+    ) -> List[Dict[str, Any]]:
+        """
+        Executes dynamic web search queries using ddgs to discover live, fresh tech deals.
+        Rotates search vectors dynamically so consecutive runs find brand new companies.
+        """
+        if not DDGS_AVAILABLE:
+            return []
+
+        results = []
+        seen_companies = set()
+
+        orbits_pool = [target_orbit] if (target_orbit and target_orbit != "All Orbits") else list(TVB_ORBITS.keys())
+        hubs_pool = [target_hub] if (target_hub and target_hub != "All Hubs") else list(TVB_HUBS.keys())
+
+        random_orbits = random.sample(orbits_pool, min(2, len(orbits_pool)))
+        random_hubs = random.sample(hubs_pool, min(2, len(hubs_pool)))
+
+        active_queries = []
+        for orb in random_orbits:
+            sub = random.choice(TVB_ORBITS.get(orb, [orb]))
+            for hub in random_hubs:
+                cities = TVB_HUBS.get(hub, [hub])
+                loc = random.choice(cities)
+                active_queries.append(f"{loc} {sub} startup raises seed million 2025 OR 2026")
+                active_queries.append(f"{loc} startup secures funding seed million")
+                active_queries.append(f"{loc} {orb} closes funding seed round")
+
+        random.shuffle(active_queries)
+        queries_to_run = active_queries[:2]
+
+        try:
+            ddgs = DDGS()
+            for idx, q in enumerate(queries_to_run):
+                if len(results) >= max_deals:
+                    break
+                if progress_callback:
+                    progress_callback(f"Live Metasearch [{idx+1}/{len(queries_to_run)}]: {q[:45]}...", 0.10 + (idx * 0.05))
+
+                try:
+                    search_hits = list(ddgs.text(q, max_results=4))
+                    random.shuffle(search_hits)
+
+                    for hit in search_hits:
+                        title = hit.get("title", "")
+                        snippet = hit.get("body", "")
+                        link = hit.get("href", "")
+                        combo_text = f"{title} {snippet}"
+
+                        funding_usd, raw_funding = self.extract_funding_from_text(combo_text)
+                        if not (1_000_000 <= funding_usd <= 5_000_000):
+                            continue
+
+                        comp_match = re.search(r'(?:^|:\s*)(?:Dutch |German |French |UK |British |London-based |Munich-based |Berlin-based )?([A-Z][a-zA-Z0-9\s]+?)\s+(?:secures|raises|lands|bags|closes|gets|nabs|picks up)\s+', title, re.IGNORECASE)
+                        if not comp_match:
+                            comp_match = re.search(r'([A-Z][a-zA-Z0-9\s]+?)\s+(?:secures|raises|lands|bags|closes|gets|nabs|picks up)\s+', snippet, re.IGNORECASE)
+
+                        if comp_match:
+                            raw_comp = comp_match.group(1).strip()
+                            comp_name = self.clean_company_name(raw_comp)
+                        else:
+                            comp_name = ""
+
+                        if not comp_name or len(comp_name) < 2 or comp_name.lower() in seen_companies:
+                            continue
+
+                        if progress_callback:
+                            progress_callback(f"Web Radar Candidate Detected: {comp_name} ({raw_funding})", 0.12 + (idx * 0.04))
+
+                        try:
+                            resp = requests.get(link, headers=HEADERS, timeout=4)
+                            if resp.status_code == 200:
+                                soup = BeautifulSoup(resp.text, 'html.parser')
+                                full_text = " ".join([p.get_text() for p in soup.find_all('p')])
+                            else:
+                                soup = None
+                                full_text = combo_text
+                        except Exception:
+                            soup = None
+                            full_text = combo_text
+
+                        founder = self.extract_founder_name(full_text)
+                        if not founder:
+                            f_match = re.search(r'(?:CEO|founder|co-founder)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)', full_text, re.IGNORECASE)
+                            if f_match:
+                                founder = self.clean_founder_name(f_match.group(1))
+
+                        domain = self.infer_company_domain(comp_name, soup)
+                        if not domain or not founder:
+                            continue
+
+                        contact_info = resolve_executive_contact(
+                            soup=soup,
+                            text=full_text,
+                            domain=domain,
+                            founder_name=founder,
+                            allow_pattern_inference=True
+                        )
+
+                        if not contact_info.get("verified"):
+                            continue
+
+                        hq_loc = "London, UK" if any(w in link.lower() for w in ["uk", "london", "startupmag"]) else "Europe"
+                        for h_name, c_list in TVB_HUBS.items():
+                            if any(c.lower() in full_text.lower() for c in c_list):
+                                hq_loc = f"{c_list[0]}, {h_name.replace(' Hub', '')}"
+                                break
+
+                        detected_orbit = "AI & Automation" if any(w in combo_text.lower() for w in ["ai", "agent", "algorithm", "intelligence"]) else "Enterprise SaaS & Digital Twin"
+                        if any(w in combo_text.lower() for w in ["health", "clinical", "medtech", "biotech"]):
+                            detected_orbit = "Healthcare & Life Sciences"
+                        elif any(w in combo_text.lower() for w in ["fintech", "payment", "bank", "wealth"]):
+                            detected_orbit = "Fintech & Payments"
+                        elif any(w in combo_text.lower() for w in ["cyber", "security", "threat", "firewall"]):
+                            detected_orbit = "Cybersecurity"
+
+                        results.append({
+                            "company_name": comp_name,
+                            "website": f"https://{domain}",
+                            "domain": domain,
+                            "orbit": detected_orbit,
+                            "sub_sector": "Live Web Discovered Tech Scale-Up",
+                            "description": (snippet[:220] if snippet else title) + "...",
+                            "funding_revenue_usd": funding_usd,
+                            "funding_stage": "Live Seed / Early Stage",
+                            "funding_evidence": f"Web Radar: {title} ({raw_funding})",
+                            "headquarters": hq_loc,
+                            "target_hub": "UK Hub" if "uk" in hq_loc.lower() else ("India Hub" if "india" in hq_loc.lower() else "Europe Hub"),
+                            "us_presence": "Minimal to None (Discovered via non-US regional venture radar)",
+                            "executive_name": founder,
+                            "executive_title": "Co-founder & CEO",
+                            "verified_email": contact_info.get("email", ""),
+                            "email_status": contact_info.get("status", "Verified (DNS MX Valid)"),
+                            "contact_provenance": contact_info.get("source", "live_search"),
+                            "contact_audit_note": contact_info.get("reason", ""),
+                            "tvb_value_alignment": f"Direct strategic alignment for TVB {detected_orbit} expansion.",
+                            "live_source_url": link,
+                            "is_live_crawled": True,
+                            "discovered_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        seen_companies.add(comp_name.lower())
+
+                except Exception as e:
+                    print(f"Error executing search query {q}: {e}")
+        except Exception as e:
+            print(f"DDGS init error: {e}")
+
+        return results
+
+    def crawl_live_feed_deals(self, target_orbit: Optional[str] = None, max_deals: int = 5, progress_callback=None) -> List[Dict[str, Any]]:
         """
         Actively crawls live feeds, fetches fresh articles, and extracts real OG leads.
         """
@@ -188,15 +387,24 @@ class TVBDiscoveryAgent:
         feeds = list(LIVE_STARTUP_FEEDS)
         random.shuffle(feeds)
 
-        for source_name, feed_url in feeds:
+        for feed_idx, (source_name, feed_url) in enumerate(feeds):
+            if len(live_leads) >= max_deals:
+                break
             if progress_callback:
-                progress_callback(f"Connecting to live feed: {source_name}...", 0.25)
+                progress_callback(f"Live Venture Radar [{feed_idx+1}/{len(feeds)}]: Connecting to {source_name}...", 0.25 + (feed_idx * 0.06))
             try:
-                feed = feedparser.parse(feed_url)
-                entries = list(feed.entries[:12])
+                try:
+                    feed_resp = requests.get(feed_url, headers=HEADERS, timeout=4)
+                    feed = feedparser.parse(feed_resp.content)
+                except Exception:
+                    feed = feedparser.parse(feed_url)
+
+                entries = list(feed.entries[:25])
                 random.shuffle(entries)
 
                 for entry in entries:
+                    if len(live_leads) >= max_deals:
+                        break
                     title = entry.title
                     link = entry.link
                     summary = entry.get('summary', '')
@@ -206,106 +414,119 @@ class TVBDiscoveryAgent:
                     
                     # Strictly filter between $1M and $5M USD
                     if 1_000_000 <= funding_usd <= 5_000_000:
+                        # Extract Company Name
+                        comp_match = re.search(r'(?:^|:\s*)(?:Dutch |German |French |UK |British |London-based |Munich-based |Berlin-based )?([A-Z][a-zA-Z0-9\s]+?)\s+(?:secures|raises|lands|bags|closes|gets|nabs|picks up)\s+', title, re.IGNORECASE)
+                        if comp_match:
+                            raw_comp = comp_match.group(1).strip()
+                            comp_name = self.clean_company_name(raw_comp)
+                        else:
+                            comp_name = ""
+
+                        if not comp_name or len(comp_name) < 2 or comp_name.lower() in seen_companies:
+                            continue
+
                         if progress_callback:
-                            progress_callback(f"Discovered fresh deal: {title[:42]}... (${funding_usd:,.0f})", 0.45)
+                            progress_callback(f"Live Deal Discovered: '{comp_name}' ({raw_funding}) in {source_name}", 0.35 + (feed_idx * 0.06))
 
                         # Fetch live article
                         try:
-                            resp = requests.get(link, headers=HEADERS, timeout=6)
-                            if resp.status_code == 200:
-                                soup = BeautifulSoup(resp.text, 'html.parser')
-                                paragraphs = [p.get_text() for p in soup.find_all('p')]
-                                full_text = " ".join(paragraphs)
-
-                                # Extract Company Name
-                                comp_match = re.search(r'([A-Z][a-zA-Z0-9\s]+?)\s+(?:secures|raises|lands|bags|closes|gets)\s+', title)
-                                if comp_match:
-                                    raw_comp = comp_match.group(1).strip()
-                                    comp_name = re.sub(r'^(?:[A-Za-z]+-based|[A-Za-z]+\s+[A-Za-z]+Tech)\s+', '', raw_comp).strip()
+                            try:
+                                resp = requests.get(link, headers=HEADERS, timeout=5)
+                                if resp.status_code == 200:
+                                    soup = BeautifulSoup(resp.text, 'html.parser')
+                                    paragraphs = [p.get_text() for p in soup.find_all('p')]
+                                    full_text = " ".join(paragraphs)
                                 else:
-                                    comp_name = title.split()[0]
+                                    soup = None
+                                    full_text = f"{title} {summary}"
+                            except Exception:
+                                soup = None
+                                full_text = f"{title} {summary}"
 
-                                if comp_name.lower() in seen_companies or len(comp_name) < 2:
-                                    continue
+                            # Extract Founder
+                            founder = self.extract_founder_name(full_text)
+                            if not founder:
+                                f_match = re.search(r'CEO\s+([A-Z][a-z]+\s+[A-Z][a-z]+)', full_text)
+                                if f_match:
+                                    founder = self.clean_founder_name(f_match.group(1))
 
-                                # Extract Founder
-                                founder = self.extract_founder_name(full_text)
-                                if not founder:
-                                    f_match = re.search(r'CEO\s+([A-Z][a-z]+\s+[A-Z][a-z]+)', full_text)
-                                    if f_match:
-                                        founder = self.clean_founder_name(f_match.group(1))
+                            # Determine Domain & Resolve Executive Contact
+                            domain = self.infer_company_domain(comp_name, soup)
+                            if not domain or not founder:
+                                continue
 
-                                # Determine Domain & Resolve Executive Contact
-                                domain = self.infer_company_domain(comp_name, soup)
-                                if not domain or not founder:
-                                    continue
+                            if progress_callback:
+                                progress_callback(f"Running DNS MX deliverability handshake for {comp_name} ({domain})...", 0.42 + (feed_idx * 0.06))
 
-                                contact_info = resolve_executive_contact(
-                                    soup=soup,
-                                    text=full_text,
-                                    domain=domain,
-                                    founder_name=founder,
-                                    allow_pattern_inference=True
-                                )
+                            contact_info = resolve_executive_contact(
+                                soup=soup,
+                                text=full_text,
+                                domain=domain,
+                                founder_name=founder,
+                                allow_pattern_inference=True
+                            )
 
-                                if not contact_info.get("verified"):
-                                    continue
+                            if not contact_info.get("verified"):
+                                continue
 
-                                exec_email = contact_info.get("email", "")
-                                email_status = contact_info.get("status", "Verified (DNS MX Valid)")
-                                contact_source = contact_info.get("source", "direct_extraction")
-                                contact_reason = contact_info.get("reason", "")
+                            if progress_callback:
+                                progress_callback(f"Validated Deal: {comp_name} (${funding_usd:,.0f} USD | MX Active)", 0.48 + (feed_idx * 0.06))
 
-                                # Detect Hub / Location
-                                hq_location = "London, UK" if "uk" in link or "uktech" in link else "Europe"
-                                for hub, cities in TVB_HUBS.items():
-                                    for city in cities:
-                                        if city.lower() in full_text.lower():
-                                            hq_location = f"{city}, {hub.replace(' Hub', '')}"
-                                            break
+                            exec_email = contact_info.get("email", "")
+                            email_status = contact_info.get("status", "Verified (DNS MX Valid)")
+                            contact_source = contact_info.get("source", "direct_extraction")
+                            contact_reason = contact_info.get("reason", "")
 
-                                # Detect Orbit
-                                orbit = "AI & Automation" if any(w in full_text.lower() for w in ["ai", "agent", "algorithm", "deep learning"]) else "Enterprise SaaS & Digital Twin"
-                                if any(w in full_text.lower() for w in ["battery", "climate", "energy", "solar"]):
-                                    orbit = "Enterprise SaaS & Digital Twin"
-                                elif any(w in full_text.lower() for w in ["health", "medical", "clinical", "biotech"]):
-                                    orbit = "Healthcare & Life Sciences"
-                                elif any(w in full_text.lower() for w in ["fintech", "payment", "bank", "invest", "crypto"]):
-                                    orbit = "Fintech & Payments"
-                                elif any(w in full_text.lower() for w in ["security", "cyber", "threat", "fraud"]):
-                                    orbit = "Cybersecurity"
+                            # Detect Hub / Location
+                            hq_location = "London, UK" if "uk" in link or "uktech" in link else "Europe"
+                            for hub, cities in TVB_HUBS.items():
+                                for city in cities:
+                                    if city.lower() in full_text.lower():
+                                        hq_location = f"{city}, {hub.replace(' Hub', '')}"
+                                        break
 
-                                # If user filtered by orbit, only keep matching orbit
-                                if target_orbit and target_orbit != "All Orbits" and orbit != target_orbit:
-                                    continue
+                            # Detect Orbit
+                            orbit = "AI & Automation" if any(w in full_text.lower() for w in ["ai", "agent", "algorithm", "deep learning"]) else "Enterprise SaaS & Digital Twin"
+                            if any(w in full_text.lower() for w in ["battery", "climate", "energy", "solar"]):
+                                orbit = "Enterprise SaaS & Digital Twin"
+                            elif any(w in full_text.lower() for w in ["health", "medical", "clinical", "biotech"]):
+                                orbit = "Healthcare & Life Sciences"
+                            elif any(w in full_text.lower() for w in ["fintech", "payment", "bank", "invest", "crypto"]):
+                                orbit = "Fintech & Payments"
+                            elif any(w in full_text.lower() for w in ["security", "cyber", "threat", "fraud"]):
+                                orbit = "Cybersecurity"
 
-                                lead_record = {
-                                    "company_name": comp_name,
-                                    "website": f"https://{domain}",
-                                    "domain": domain,
-                                    "orbit": orbit,
-                                    "sub_sector": "Live Crawled Tech Platform",
-                                    "description": summary[:220] if summary else full_text[:220] + "...",
-                                    "funding_revenue_usd": funding_usd,
-                                    "funding_stage": "Live Seed / Early Stage",
-                                    "funding_evidence": f"Announced: {title} (Verified {raw_funding})",
-                                    "headquarters": hq_location,
-                                    "target_hub": "UK Hub" if "uk" in hq_location.lower() else "Europe Hub",
-                                    "us_presence": "Minimal to None (Discovered from live non-US venture announcement)",
-                                    "executive_name": founder,
-                                    "executive_title": "Co-founder & CEO",
-                                    "verified_email": exec_email,
-                                    "email_status": email_status,
-                                    "contact_provenance": contact_source,
-                                    "contact_audit_note": contact_reason,
-                                    "tvb_value_alignment": f"High alignment for TVB {orbit} & US market access expansion.",
-                                    "live_source_url": link,
-                                    "is_live_crawled": True,
-                                    "discovered_at": time.strftime("%Y-%m-%d %H:%M:%S")
-                                }
+                            # If user filtered by orbit, only keep matching orbit
+                            if target_orbit and target_orbit != "All Orbits" and orbit != target_orbit:
+                                continue
 
-                                live_leads.append(lead_record)
-                                seen_companies.add(comp_name.lower())
+                            lead_record = {
+                                "company_name": comp_name,
+                                "website": f"https://{domain}",
+                                "domain": domain,
+                                "orbit": orbit,
+                                "sub_sector": "Live Crawled Tech Platform",
+                                "description": summary[:220] if summary else full_text[:220] + "...",
+                                "funding_revenue_usd": funding_usd,
+                                "funding_stage": "Live Seed / Early Stage",
+                                "funding_evidence": f"Announced: {title} (Verified {raw_funding})",
+                                "headquarters": hq_location,
+                                "target_hub": "UK Hub" if "uk" in hq_location.lower() else "Europe Hub",
+                                "us_presence": "Minimal to None (Discovered from live non-US venture announcement)",
+                                "executive_name": founder,
+                                "executive_title": "Co-founder & CEO",
+                                "verified_email": exec_email,
+                                "email_status": email_status,
+                                "contact_provenance": contact_source,
+                                "contact_audit_note": contact_reason,
+                                "tvb_value_alignment": f"High alignment for TVB {orbit} & US market access expansion.",
+                                "live_source_url": link,
+                                "is_live_crawled": True,
+                                "discovered_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                            }
+
+                            live_leads.append(lead_record)
+                            seen_companies.add(comp_name.lower())
 
                         except Exception as e:
                             print(f"Error scraping live article {link}: {e}")
@@ -339,13 +560,32 @@ class TVBDiscoveryAgent:
         audit_reports = {}
         seen_domains = set()
 
-        # Step 1: Live Web Discovery (if enabled)
+        # Step 1: Live Web Discovery & RSS Crawler (if enabled)
         if include_live_search:
             if progress_callback:
-                progress_callback("Initiating Autonomous Web Crawler on Live European, UK, and Global Feeds...", 0.15)
+                progress_callback("Initiating Autonomous Web Metasearch across Venture Radars...", 0.15)
 
-            live_deals = self.crawl_live_feed_deals(target_orbit=target_orbit, progress_callback=progress_callback)
-            for deal in live_deals:
+            # 1a. Dynamic Live Web Search
+            web_deals = self.search_live_web_deals(target_orbit=target_orbit, target_hub=target_hub, max_deals=8, progress_callback=progress_callback)
+            for deal in web_deals:
+                dom = deal.get("domain", "").lower()
+                if not dom or dom in seen_domains:
+                    continue
+                seen_domains.add(dom)
+                is_qual, audit = validate_tvb_candidate(deal)
+                audit_reports[deal.get("company_name", dom)] = audit
+                if is_qual:
+                    qualified.append(deal)
+                elif audit.get("contact_valid") is False or audit.get("warnings"):
+                    needs_review.append(deal)
+                else:
+                    disqualified.append(deal)
+
+            # 1b. Real-Time Venture RSS Feeds
+            if progress_callback:
+                progress_callback("Scanning Real-Time European, UK, and Global Venture Feeds...", 0.50)
+            feed_deals = self.crawl_live_feed_deals(target_orbit=target_orbit, progress_callback=progress_callback)
+            for deal in feed_deals:
                 dom = deal.get("domain", "").lower()
                 if not dom or dom in seen_domains:
                     continue
@@ -405,8 +645,13 @@ class TVBDiscoveryAgent:
                     if len(qualified) >= 15:
                         break
 
+        # Guarantee fresh live-scraped deals remain at the very front of the qualified list
+        live_leads = [q for q in qualified if q.get("is_live_crawled")]
+        seed_leads = [q for q in qualified if not q.get("is_live_crawled")]
+        qualified = live_leads + seed_leads
+
         if progress_callback:
-            progress_callback(f"Complete! Generated batch of {len(qualified)} verified qualified leads.", 1.0)
+            progress_callback(f"Complete! Discovered {len(live_leads)} live 2026 deals + {len(seed_leads)} vetted scale-ups (Total: {len(qualified)}).", 1.0)
 
         source_queries = [f"{name} ({url})" for name, url in LIVE_STARTUP_FEEDS]
         if target_orbit and target_orbit != "All Orbits":

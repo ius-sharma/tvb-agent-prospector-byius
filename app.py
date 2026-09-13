@@ -178,6 +178,8 @@ if "leads" not in st.session_state:
     st.session_state.leads = []
     st.session_state.last_run_time = "NEVER"
     st.session_state.run_count = 0
+    st.session_state.discovery_logs = []
+    st.session_state.last_run_summary = ""
 
 # Sidebar Configuration
 with st.sidebar:
