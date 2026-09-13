@@ -315,6 +315,114 @@ class TVBDiscoveryAgent:
 
         return live_leads
 
+    def run_pipeline(
+        self,
+        include_live_search: bool = True,
+        target_count: int = 18,
+        target_orbit: Optional[str] = None,
+        target_hub: Optional[str] = None,
+        progress_callback=None
+    ) -> Dict[str, Any]:
+        """
+        Executes the end-to-end prospecting and qualification pipeline.
+        Returns a structured dictionary matching TVB specifications:
+        - 'qualified': List of leads meeting 100% of TVB criteria
+        - 'needs_review': Candidates needing manual check (e.g. missing founder or email)
+        - 'disqualified': Rejected candidates with audit reasons
+        - 'qualified_count': Total count of qualified leads
+        - 'queries': List of data sources / discovery vectors consulted
+        - 'audit_reports': Detailed validation audit breakdown for each record
+        """
+        qualified = []
+        needs_review = []
+        disqualified = []
+        audit_reports = {}
+        seen_domains = set()
+
+        # Step 1: Live Web Discovery (if enabled)
+        if include_live_search:
+            if progress_callback:
+                progress_callback("Initiating Autonomous Web Crawler on Live European, UK, and Global Feeds...", 0.15)
+
+            live_deals = self.crawl_live_feed_deals(target_orbit=target_orbit, progress_callback=progress_callback)
+            for deal in live_deals:
+                dom = deal.get("domain", "").lower()
+                if not dom or dom in seen_domains:
+                    continue
+                seen_domains.add(dom)
+                is_qual, audit = validate_tvb_candidate(deal)
+                audit_reports[deal.get("company_name", dom)] = audit
+                if is_qual:
+                    qualified.append(deal)
+                elif audit.get("contact_valid") is False or audit.get("warnings"):
+                    needs_review.append(deal)
+                else:
+                    disqualified.append(deal)
+
+        # Step 2: Combine with baseline verified companies to ensure minimum bar (15+)
+        if progress_callback:
+            progress_callback(f"Synthesizing leads and verifying compliance (Found {len(qualified)} fresh deals)...", 0.70)
+
+        candidate_pool = list(self.verified_seeds)
+        # Randomize candidate pool so each run feels fresh
+        random.shuffle(candidate_pool)
+
+        for seed in candidate_pool:
+            dom = seed.get("domain", "").lower()
+            if dom in seen_domains:
+                continue
+
+            # Apply optional orbit/hub filters
+            if target_orbit and target_orbit != "All Orbits" and seed.get("orbit") != target_orbit:
+                continue
+            if target_hub and target_hub != "All Hubs" and seed.get("target_hub") != target_hub:
+                continue
+
+            seen_domains.add(dom)
+            is_qual, audit = validate_tvb_candidate(seed)
+            audit_reports[seed.get("company_name", dom)] = audit
+
+            if is_qual:
+                qualified.append(seed)
+            elif audit.get("contact_valid") is False or audit.get("warnings"):
+                needs_review.append(seed)
+            else:
+                disqualified.append(seed)
+
+            if len(qualified) >= max(target_count, 18):
+                break
+
+        # Fallback to ensure minimum bar (15+ leads) if filtering was too strict
+        if len(qualified) < 15:
+            for seed in candidate_pool:
+                dom = seed.get("domain", "").lower()
+                if dom not in seen_domains:
+                    seen_domains.add(dom)
+                    is_qual, audit = validate_tvb_candidate(seed)
+                    audit_reports[seed.get("company_name", dom)] = audit
+                    if is_qual:
+                        qualified.append(seed)
+                    if len(qualified) >= 15:
+                        break
+
+        if progress_callback:
+            progress_callback(f"Complete! Generated batch of {len(qualified)} verified qualified leads.", 1.0)
+
+        source_queries = [f"{name} ({url})" for name, url in LIVE_STARTUP_FEEDS]
+        if target_orbit and target_orbit != "All Orbits":
+            source_queries.append(f"Orbit Vector: {target_orbit}")
+        if target_hub and target_hub != "All Hubs":
+            source_queries.append(f"Hub Vector: {target_hub}")
+
+        return {
+            "qualified": qualified,
+            "needs_review": needs_review,
+            "disqualified": disqualified,
+            "qualified_count": len(qualified),
+            "queries": source_queries,
+            "audit_reports": audit_reports
+        }
+
     def discover_and_qualify_leads(
         self,
         target_count: int = 18,
@@ -324,65 +432,14 @@ class TVBDiscoveryAgent:
         progress_callback=None
     ) -> List[Dict[str, Any]]:
         """
-        Full Fresh Discovery Pipeline:
-        - Drops prior runs completely (clean slate).
-        - Executes Live Web Crawler to pull fresh OG deals.
-        - Fills the remainder up to target_count from verified candidates matching requested Orbit/Hub.
-        - Guarantees 15+ verified, strictly compliant leads.
+        Public API returning list of verified qualified leads for UI display.
+        Delegates to run_pipeline.
         """
-        fresh_leads = []
-        seen_domains = set()
-
-        # Step 1: Execute Live Crawler for Fresh OG Deals
-        if run_live_crawler:
-            if progress_callback:
-                progress_callback("Initiating Autonomous Web Crawler on Live European, UK, and Global Feeds...", 0.15)
-            
-            live_deals = self.crawl_live_feed_deals(target_orbit=target_orbit, progress_callback=progress_callback)
-            for deal in live_deals:
-                dom = deal.get("domain", "").lower()
-                if dom and dom not in seen_domains:
-                    fresh_leads.append(deal)
-                    seen_domains.add(dom)
-
-        # Step 2: Combine with baseline verified companies to ensure minimum bar (15+)
-        if progress_callback:
-            progress_callback(f"Synthesizing leads and verifying DNS MX records (Found {len(fresh_leads)} fresh deals)...", 0.70)
-
-        # Shuffle candidates so every search feels fresh and varied
-        candidate_pool = list(self.verified_seeds)
-        random.shuffle(candidate_pool)
-
-        # Priority to matching orbit/hub if filtered
-        for seed in candidate_pool:
-            dom = seed.get("domain", "").lower()
-            if dom not in seen_domains:
-                # Apply optional orbit/hub filters
-                if target_orbit and target_orbit != "All Orbits" and seed.get("orbit") != target_orbit:
-                    continue
-                if target_hub and target_hub != "All Hubs" and seed.get("target_hub") != target_hub:
-                    continue
-
-                is_qual, _ = validate_tvb_candidate(seed)
-                if is_qual:
-                    fresh_leads.append(seed)
-                    seen_domains.add(dom)
-            if len(fresh_leads) >= max(target_count, 18):
-                break
-
-        # If strict filtering left fewer than target_count, backfill from remaining valid pool
-        if len(fresh_leads) < 15:
-            for seed in candidate_pool:
-                dom = seed.get("domain", "").lower()
-                if dom not in seen_domains:
-                    is_qual, _ = validate_tvb_candidate(seed)
-                    if is_qual:
-                        fresh_leads.append(seed)
-                        seen_domains.add(dom)
-                if len(fresh_leads) >= 15:
-                    break
-
-        if progress_callback:
-            progress_callback(f"Complete! Generated fresh batch of {len(fresh_leads)} verified qualified leads.", 1.0)
-
-        return fresh_leads
+        result = self.run_pipeline(
+            include_live_search=run_live_crawler,
+            target_count=target_count,
+            target_orbit=target_orbit,
+            target_hub=target_hub,
+            progress_callback=progress_callback
+        )
+        return result["qualified"]
