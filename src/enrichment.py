@@ -55,8 +55,61 @@ def extract_emails(text: str) -> List[str]:
     return emails
 
 
+# Known domain parking, placeholder, and reseller MX fingerprints
+PARKED_MX_KEYWORDS = {
+    "secureserver.net",          # GoDaddy default parked mail
+    "registrar-servers.com",     # Namecheap parking
+    "parkingcrew.net",           # ParkingCrew monetization
+    "bodis.com",                 # Bodis parking
+    "sedoparking.com",           # Sedo parked domain
+    "above.com",                 # Above.com domain parking
+    "dan.com",                   # Dan.com parking
+    "hugedomains.com",           # HugeDomains
+    "parklogic.com",             # ParkLogic
+    "cashparking.com",           # CashParking
+    "internettraffic.com",       # InternetTraffic parking
+    "zeromx.com",                # ZeroMX
+    "domaincontrol.com",         # GoDaddy default parking host
+    "renewyourname.net",         # Expired domain registrar parking
+    "pendingrenewaldeletion.com",
+    "dropcatch.com",
+    "namebrightdns.com",
+    "parking.reg.ru",
+    "domain-parking",
+    "parked-domain",
+}
+
+PARKED_HTML_INDICATORS = [
+    "domain is parked",
+    "this domain is for sale",
+    "buy this domain",
+    "domain for sale",
+    "inquire about this domain",
+    "hugedomains.com",
+    "godaddy - parked domain",
+    "sedo domain parking",
+    "namecheap parking",
+    "parkingcrew",
+    "dan.com",
+    "under construction",
+    "domain has expired",
+    "renew this domain",
+]
+
+
+def is_parked_page(html_text: str) -> bool:
+    """Detects whether page content or title indicates a parked/for-sale domain placeholder."""
+    if not html_text:
+        return False
+    lower_text = html_text.lower()
+    return any(indicator in lower_text for indicator in PARKED_HTML_INDICATORS)
+
+
 def check_dns_mx(domain: str) -> bool:
-    """Checks whether the domain has valid MX records configured for mail exchange."""
+    """
+    Checks whether the domain has authentic, non-parked MX records configured for mail exchange.
+    Rejects RFC 7505 Null MX records and known parked/reseller MX servers.
+    """
     if not domain:
         return False
 
@@ -67,29 +120,39 @@ def check_dns_mx(domain: str) -> bool:
 
     if domain in MX_CACHE:
         return MX_CACHE[domain]
-    
+
     if DNS_AVAILABLE:
         try:
             resolver = dns.resolver.Resolver()
             resolver.timeout = 0.8
             resolver.lifetime = 1.0
             records = resolver.resolve(domain, "MX")
-            has_mx = len(records) > 0
-            MX_CACHE[domain] = has_mx
-            return has_mx
+            
+            # Filter out Null MX (RFC 7505) and parked/reseller mail exchangers
+            has_genuine_mx = False
+            for r in records:
+                exchange = str(r.exchange).lower().rstrip('.')
+                # Null MX RFC 7505: explicitly indicates domain does not accept email
+                if exchange in ["", "."] or (hasattr(r, 'preference') and r.preference == 0 and exchange in ["", "."]):
+                    continue
+                # Parked host check
+                if any(parked in exchange for parked in PARKED_MX_KEYWORDS):
+                    continue
+                has_genuine_mx = True
+                break
+
+            MX_CACHE[domain] = has_genuine_mx
+            return has_genuine_mx
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.Timeout):
             MX_CACHE[domain] = False
             return False
         except Exception:
             pass
 
-    try:
-        host_info = socket.gethostbyname(domain)
-        MX_CACHE[domain] = bool(host_info)
-        return MX_CACHE[domain]
-    except Exception:
-        MX_CACHE[domain] = False
-        return False
+    # Never fall back to A-record port-25 / socket checks as parked sites always have active A-records!
+    MX_CACHE[domain] = False
+    return False
+
 
 
 def extract_contact_emails(soup: Any, text: str, domain: str) -> List[str]:

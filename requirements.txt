@@ -1,10 +1,15 @@
+# UI & Data Processing
 streamlit>=1.30.0
 pandas>=2.0.0
+
+# Autonomous Web Search & Crawling
 ddgs>=9.0.0
-feedparser>=6.0.10
-dnspython>=2.6.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
+feedparser>=6.0.10
+
+# DNS MX Network Verification
+dnspython>=2.6.0
+
+# Environment Management
 python-dotenv>=1.0.0
-
-

@@ -223,34 +223,86 @@ class TVBDiscoveryAgent:
 
         return ""
 
-    def infer_company_domain(self, company_name: str, article_soup: BeautifulSoup) -> str:
-        """Finds or infers official company domain with resemblance and active DNS MX check."""
+    def infer_company_domain(self, company_name: str, article_soup: Optional[BeautifulSoup] = None, article_text: str = "") -> str:
+        """
+        Finds or verifies official company domain with resemblance and authentic DNS MX checks.
+        Rejects media publishers, social links, parked domains, and unverified guessed domains.
+        Returns empty string if no authentic, non-parked domain can be established.
+        """
+        if not company_name:
+            return ""
+
         clean_comp = re.sub(r'[^a-zA-Z0-9]', '', company_name.lower())
+        if len(clean_comp) < 2:
+            return ""
+
         blacklisted = {
-            "instagram.com", "facebook.com", "twitter.com", "x.com", "linkedin.com",
-            "youtube.com", "google.com", "eu-startups.com", "uktech.news", "techfundingnews.com",
-            "inc42.com", "apple.com", "cookiedatabase.org", "wordpress.org", "sifted.eu", "siliconcanals.com"
+            # Venture news & tech publishers
+            "sifted.eu", "sifted.com", "tech.eu", "siliconcanals.com", "uktech.news",
+            "techfundingnews.com", "startupsmagazine.co.uk", "nordic9.com", "eu-startups.com",
+            "trendingtopics.eu", "frenchweb.fr", "maddyness.com", "gruenderszene.de",
+            "startupticker.ch", "swisscognitive.ch", "finovate.com", "finsmes.com",
+            "venturebeat.com", "pymnts.com", "thepaypers.com", "inc42.com", "yourstory.com",
+            "entrackr.com", "wamda.com", "magnitt.com", "techinasia.com", "e27.co",
+            "techcrunch.com", "bloomberg.com", "reuters.com", "forbes.com", "ft.com",
+            "wsj.com", "cnbc.com", "businessinsider.com", "crunchbase.com", "pitchbook.com",
+            # Social platforms & aggregators
+            "linkedin.com", "twitter.com", "x.com", "facebook.com", "instagram.com",
+            "youtube.com", "tiktok.com", "reddit.com", "medium.com", "substack.com",
+            "github.com", "gitlab.com", "discord.com", "slack.com", "telegram.org",
+            "google.com", "apple.com", "microsoft.com", "amazon.com", "aws.amazon.com",
+            "wikipedia.org", "wikimedia.org", "cookiedatabase.org", "wordpress.org",
+            "cloudflare.com", "stripe.com", "godaddy.com", "namecheap.com", "sedo.com"
         }
 
-        # Check outbound links in article that resemble company name
+        # 1. Check outbound links in article that resemble company name
         if article_soup:
             for a in article_soup.find_all('a', href=True):
                 href = a['href']
                 match = re.search(r'https?://(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})', href)
                 if match:
                     dom = match.group(1).lower()
-                    if dom not in blacklisted and not dom.endswith(('.org', '.gov', '.edu')):
-                        clean_dom = dom.split('.')[0].lower()
-                        if clean_comp in clean_dom or clean_dom in clean_comp:
-                            if self.check_mx_quick(dom):
-                                return dom
+                    if dom in blacklisted or dom.endswith(('.org', '.gov', '.edu', '.onion')):
+                        continue
+                    clean_dom = dom.split('.')[0].lower()
+                    is_match = (
+                        clean_comp == clean_dom or
+                        (len(clean_comp) >= 4 and len(clean_dom) >= 4 and (clean_comp in clean_dom or clean_dom in clean_comp))
+                    )
+                    if is_match:
+                        if self.check_mx_quick(dom):
+                            return dom
 
-        # Fast fallback candidates based on company name
-        for cand in [f"{clean_comp}.com", f"{clean_comp}.ai"]:
+        # 2. Check explicit domain mentions in article text (e.g. "visit company.io")
+        if article_text:
+            text_dom_matches = re.findall(
+                r'\b([a-zA-Z0-9-]+\.(?:com|ai|io|tech|co|dev|eu|co\.uk|de|fr|in|me|net))\b',
+                article_text.lower()
+            )
+            for dom in text_dom_matches:
+                if dom in blacklisted or dom.endswith(('.org', '.gov', '.edu')):
+                    continue
+                clean_dom = dom.split('.')[0].lower()
+                if clean_comp == clean_dom or (len(clean_comp) >= 4 and len(clean_dom) >= 4 and clean_comp in clean_dom):
+                    if self.check_mx_quick(dom):
+                        return dom
+
+        # 3. Targeted TLD candidate verification with strict non-parked MX validation
+        candidates = [
+            f"{clean_comp}.com",
+            f"{clean_comp}.ai",
+            f"{clean_comp}.io",
+            f"{clean_comp}.co",
+            f"{clean_comp}.tech"
+        ]
+        for cand in candidates:
+            if cand in blacklisted:
+                continue
             if self.check_mx_quick(cand):
                 return cand
 
-        return f"{clean_comp}.com"
+        # Zero-hallucination rule: never fall back to a guessed/unverified domain
+        return ""
 
     def check_mx_quick(self, domain: str) -> bool:
         """Quick MX record check using unified enrichment validation."""
@@ -350,7 +402,7 @@ class TVBDiscoveryAgent:
                             if f_match:
                                 founder = self.clean_founder_name(f_match.group(1))
 
-                        domain = self.infer_company_domain(comp_name, soup)
+                        domain = self.infer_company_domain(comp_name, soup, full_text)
                         if not domain or not founder or domain in seen_domains:
                             continue
                         seen_domains.add(domain)
@@ -506,7 +558,7 @@ class TVBDiscoveryAgent:
                                     founder = self.clean_founder_name(f_match.group(1))
 
                             # Determine Domain & Resolve Executive Contact
-                            domain = self.infer_company_domain(comp_name, soup)
+                            domain = self.infer_company_domain(comp_name, soup, full_text)
                             if not domain or not founder or domain in seen_domains:
                                 continue
                             seen_domains.add(domain)
