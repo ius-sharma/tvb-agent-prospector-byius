@@ -7,10 +7,9 @@ Strictly validates candidate companies against TVB's 4 core parameters:
 4. Founder / CEO contact availability (with verified email)
 """
 
-import os
 import re
 from typing import Dict, Any, Tuple
-from src.tvb_context import TVB_CRITERIA, TVB_HUBS, TVB_ORBITS
+from src.tvb_context import TVB_CRITERIA, TVB_HUBS
 from src.enrichment import verify_executive_email
 
 
@@ -18,6 +17,11 @@ US_LOCATIONS = {
     "united states", "usa", "u.s.", "u.s.a.", "california", "new york", "san francisco",
     "silicon valley", "austin", "texas", "seattle", "boston", "chicago", "los angeles",
     "delaware", "miami", "denver"
+}
+
+INACTIVE_SIGNALS = {
+    "acquired by", "shut down", "shutdown", "closed down", "no longer operating",
+    "defunct", "inactive"
 }
 
 
@@ -84,7 +88,38 @@ def has_minimal_us_presence(headquarters: str, location_notes: str) -> bool:
         if re.search(pattern, headquarters.lower()):
             return False
             
-    return non_us_found or ("us" not in headquarters.lower())
+    hq_lower = headquarters.lower()
+    return non_us_found or not any(re.search(rf"\b{re.escape(loc)}\b", hq_lower) for loc in US_LOCATIONS)
+
+
+def has_disqualifying_status(candidate: Dict[str, Any]) -> bool:
+    """Rejects companies that clearly are not active standalone prospects anymore."""
+    combined = " ".join(
+        str(candidate.get(key, ""))
+        for key in ("company_name", "description", "funding_evidence", "status_notes")
+    ).lower()
+    return any(signal in combined for signal in INACTIVE_SIGNALS)
+
+
+def collect_source_urls(candidate: Dict[str, Any]) -> list:
+    """Normalizes available source/evidence URLs for audit display."""
+    urls = []
+    for key in ("source_url", "funding_source_url", "contact_source_url", "website"):
+        value = candidate.get(key)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            urls.append(value)
+
+    for value in candidate.get("source_urls", []) or []:
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            urls.append(value)
+
+    deduped = []
+    seen = set()
+    for url in urls:
+        if url not in seen:
+            deduped.append(url)
+            seen.add(url)
+    return deduped
 
 
 def validate_tvb_candidate(candidate: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
@@ -93,6 +128,11 @@ def validate_tvb_candidate(candidate: Dict[str, Any]) -> Tuple[bool, Dict[str, A
     Returns (is_qualified, audit_report).
     """
     reasons = []
+    warnings = []
+
+    active_valid = not has_disqualifying_status(candidate)
+    if not active_valid:
+        reasons.append("Company appears acquired, inactive, or no longer a standalone prospect.")
     
     # 1. Funding / Revenue Check ($1M - $5M)
     funding_usd = parse_funding_amount(candidate.get("funding_revenue_usd", 0))
@@ -130,7 +170,11 @@ def validate_tvb_candidate(candidate: Dict[str, Any]) -> Tuple[bool, Dict[str, A
     if not email_verification["verified"]:
         reasons.append(f"Executive email unverified: {email_verification.get('reason')}")
 
-    is_qualified = funding_valid and tech_valid and non_us_valid and contact_valid
+    source_urls = collect_source_urls(candidate)
+    if not source_urls:
+        warnings.append("No source URL attached; keep this lead in review before external use.")
+
+    is_qualified = funding_valid and tech_valid and non_us_valid and contact_valid and active_valid
     
     audit_report = {
         "is_qualified": is_qualified,
@@ -139,8 +183,11 @@ def validate_tvb_candidate(candidate: Dict[str, Any]) -> Tuple[bool, Dict[str, A
         "tech_valid": tech_valid,
         "non_us_valid": non_us_valid,
         "contact_valid": contact_valid,
+        "active_valid": active_valid,
+        "source_urls": source_urls,
         "email_details": email_verification,
-        "disqualification_reasons": reasons
+        "disqualification_reasons": reasons,
+        "warnings": warnings,
     }
     
     return is_qualified, audit_report

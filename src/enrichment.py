@@ -5,7 +5,7 @@ Ensures zero fake/generic emails and verifies DNS MX deliverability.
 
 import re
 import socket
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 try:
     import dns.resolver
@@ -19,11 +19,17 @@ EMAIL_REGEX = re.compile(
     r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
 )
 
+EMAIL_FIND_REGEX = re.compile(
+    r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+\b"
+)
+
 # Common disposable or dummy domains
 DISPOSABLE_DOMAINS = {
     "example.com", "test.com", "mailinator.com", "tempmail.com", "guerrillamail.com",
     "10minutemail.com", "fake.com", "sample.com"
 }
+
+MX_CACHE: Dict[str, bool] = {}
 
 
 def is_generic_email(email: str) -> bool:
@@ -34,15 +40,38 @@ def is_generic_email(email: str) -> bool:
     return prefix in GENERIC_EMAIL_PREFIXES
 
 
+def extract_emails(text: str) -> List[str]:
+    """Finds unique email addresses in search snippets or fetched page text."""
+    if not text:
+        return []
+
+    emails = []
+    seen = set()
+    for match in EMAIL_FIND_REGEX.findall(text):
+        cleaned = match.strip(".,;:()[]{}<>").lower()
+        if cleaned not in seen:
+            emails.append(cleaned)
+            seen.add(cleaned)
+    return emails
+
+
 def check_dns_mx(domain: str) -> bool:
     """Checks whether the domain has valid MX records configured for mail exchange."""
     if not domain:
         return False
+
+    domain = domain.strip().lower()
+    if domain in MX_CACHE:
+        return MX_CACHE[domain]
     
     if DNS_AVAILABLE:
         try:
-            records = dns.resolver.resolve(domain, 'MX', lifetime=3.0)
-            return len(records) > 0
+            resolver = dns.resolver.Resolver()
+            resolver.timeout = 0.25
+            resolver.lifetime = 0.35
+            records = resolver.resolve(domain, "MX")
+            MX_CACHE[domain] = len(records) > 0
+            return MX_CACHE[domain]
         except Exception:
             # Fallback to standard socket check
             pass
@@ -50,8 +79,10 @@ def check_dns_mx(domain: str) -> bool:
     try:
         # Fallback using socket getaddrinfo
         socket.getaddrinfo(domain, 25, socket.AF_INET, socket.SOCK_STREAM)
+        MX_CACHE[domain] = True
         return True
     except Exception:
+        MX_CACHE[domain] = False
         return False
 
 
@@ -113,5 +144,5 @@ def verify_executive_email(email: Optional[str]) -> Dict[str, Any]:
         "verified": True,
         "email": cleaned_email,
         "domain": domain_part,
-        "reason": "Syntax verified, non-generic executive address, active DNS MX confirmed"
+        "reason": "Syntax verified, non-generic address, active domain MX confirmed"
     }
