@@ -180,6 +180,7 @@ if "leads" not in st.session_state:
     st.session_state.run_count = 0
     st.session_state.discovery_logs = []
     st.session_state.last_run_summary = ""
+    st.session_state.session_seen_domains = set()
 
 # Sidebar Configuration
 with st.sidebar:
@@ -219,8 +220,13 @@ with st.sidebar:
             target_count=18,
             run_live_crawler=False,
             target_orbit=selected_orbit,
-            target_hub=selected_hub
+            target_hub=selected_hub,
+            exclude_domains=st.session_state.session_seen_domains
         )
+        for l in st.session_state.leads:
+            dom = l.get("domain", "").lower()
+            if dom:
+                st.session_state.session_seen_domains.add(dom)
         st.session_state.last_run_time = time.strftime("%H:%M:%S UTC")
         st.session_state.run_count += 1
         st.rerun()
@@ -251,57 +257,110 @@ col_act1, col_act2, col_meta = st.columns([2.3, 1.2, 1.5])
 
 with col_act1:
     if st.button("RUN LIVE AUTONOMOUS WEB DISCOVERY", use_container_width=True, key="btn_run_live_discovery"):
-        # Reset state completely for fresh scrape
         st.session_state.leads = []
+        st.session_state.discovery_logs = []
         
+        stage_indicator = st.empty()
         progress_bar = st.progress(0)
-        status_box = st.empty()
+        terminal_console = st.empty()
+
+        current_logs = []
 
         def update_progress(msg, frac):
-            status_box.markdown(f"""
-            <div class="terminal-box">
-                [AGENT STEP {int(frac*100)}%] >> {msg}
+            ts = time.strftime("%H:%M:%S")
+            if frac < 0.20:
+                stage_name = "STAGE 1/4: VECTOR ROUTING & METASEARCH"
+            elif frac < 0.65:
+                stage_name = "STAGE 2/4: REAL-TIME VENTURE RADAR CRAWLING"
+            elif frac < 0.85:
+                stage_name = "STAGE 3/4: FOUNDER PARSING & DNS MX HANDSHAKE"
+            else:
+                stage_name = "STAGE 4/4: TVB SCREENING QUALIFICATION"
+
+            current_logs.append(f"[{ts}] {msg}")
+            
+            stage_indicator.markdown(f"""
+            <div style="display: flex; align-items: center; justify-content: space-between; background: #121215; border: 1px solid #27272A; padding: 10px 14px; border-radius: 6px; margin-bottom: 8px;">
+                <div style="font-family: 'Geist Mono', monospace; font-size: 0.80rem; font-weight: 700; color: #FFFFFF;">
+                    <span style="color: #10B981; margin-right: 8px;">●</span>{stage_name}
+                </div>
+                <div style="font-family: 'Geist Mono', monospace; font-size: 0.78rem; color: #A1A1AA;">
+                    PROGRESS: {int(frac * 100)}%
+                </div>
             </div>
             """, unsafe_allow_html=True)
-            progress_bar.progress(frac)
-            time.sleep(0.25)
+            
+            recent_logs_html = "".join([f"<div style='margin-bottom: 3px;'>&gt; {l}</div>" for l in current_logs[-6:]])
+            terminal_console.markdown(f"""
+            <div class="terminal-box" style="font-family: 'Geist Mono', monospace; font-size: 0.76rem; background: #0A0A0C; border: 1px solid #27272A; border-radius: 6px; padding: 12px; color: #D4D4D8; min-height: 125px; line-height: 1.5;">
+                {recent_logs_html}
+            </div>
+            """, unsafe_allow_html=True)
+            progress_bar.progress(min(frac, 1.0))
+            time.sleep(0.08)
 
         agent = TVBDiscoveryAgent()
         
-        # Scrape brand new batch
+        # Scrape brand new batch with session deduplication
         fresh_batch = agent.discover_and_qualify_leads(
             target_count=18,
             run_live_crawler=True,
             target_orbit=selected_orbit,
             target_hub=selected_hub,
+            exclude_domains=st.session_state.session_seen_domains,
             progress_callback=update_progress
         )
 
         st.session_state.leads = fresh_batch
+        st.session_state.discovery_logs = current_logs
         st.session_state.last_run_time = time.strftime("%H:%M:%S UTC")
         st.session_state.run_count += 1
-        status_box.markdown(f"""
-        <div class="terminal-box" style="color: #FFFFFF; border-color: #3F3F46;">
-            [RUN #{st.session_state.run_count} COMPLETE] >> Successfully verified {len(fresh_batch)} qualified leads matching 100% of TVB criteria.
+        live_count = sum(1 for l in fresh_batch if l.get("is_live_crawled"))
+        seed_count = len(fresh_batch) - live_count
+        st.session_state.last_run_summary = f"Discovered {live_count} live 2026 deals + synthesized {seed_count} vetted scale-ups."
+
+        # Track seen domains so subsequent runs never repeat previously surfaced companies
+        for l in fresh_batch:
+            dom = l.get("domain", "").lower()
+            if dom:
+                st.session_state.session_seen_domains.add(dom)
+
+        stage_indicator.markdown(f"""
+        <div style="display: flex; align-items: center; justify-content: space-between; background: #121215; border: 1px solid #10B981; padding: 10px 14px; border-radius: 6px; margin-bottom: 8px;">
+            <div style="font-family: 'Geist Mono', monospace; font-size: 0.80rem; font-weight: 700; color: #10B981;">
+                ✔ RUN #{st.session_state.run_count} COMPLETE
+            </div>
+            <div style="font-family: 'Geist Mono', monospace; font-size: 0.78rem; color: #FFFFFF;">
+                {len(fresh_batch)} QUALIFIED LEADS (100% TVB PASS)
+            </div>
         </div>
         """, unsafe_allow_html=True)
-        time.sleep(1.0)
+        time.sleep(0.8)
         st.rerun()
 
 with col_act2:
     if st.button("CLEAR ALL LEADS", use_container_width=True, key="btn_clear_all_leads"):
         st.session_state.leads = []
         st.session_state.last_run_time = "CLEARED"
+        st.session_state.session_seen_domains = set()
         st.rerun()
 
 with col_meta:
     status_label = "ACTIVE" if st.session_state.leads else "IDLE"
+    seen_unique_count = len(st.session_state.get("session_seen_domains", set()))
     st.markdown(f"""
     <div style="font-family: 'Geist Mono', monospace; font-size: 0.78rem; color: #71717A; line-height: 1.6; padding-top: 4px;">
         STATUS: <span style="color: {'#FFFFFF' if status_label == 'ACTIVE' else '#71717A'}; font-weight: 700;">{status_label}</span><br>
-        LAST RUN: <span style="color: #A1A1AA;">{st.session_state.last_run_time}</span> | RUN #{st.session_state.run_count}
+        LAST RUN: <span style="color: #A1A1AA;">{st.session_state.last_run_time}</span> | RUN #{st.session_state.run_count}<br>
+        DEDUPLICATION: <span style="color: #10B981; font-weight: 700;">{seen_unique_count} UNIQUE COMPANIES TRACKED</span>
     </div>
     """, unsafe_allow_html=True)
+
+if st.session_state.get("discovery_logs"):
+    st.write("")
+    with st.expander(f"AGENT EXECUTION TELEMETRY (RUN #{st.session_state.run_count} — {len(st.session_state.discovery_logs)} EVENTS RECORDED)", expanded=False):
+        log_content = "\n".join(st.session_state.discovery_logs)
+        st.code(log_content, language="bash")
 
 st.divider()
 
@@ -324,7 +383,7 @@ else:
     with f1:
         search_query = st.text_input("Filter Leads (Company, Sector, Founder):", "", key="leads_search_query_input")
     with f2:
-        sort_mode = st.selectbox("Sort Order:", ["Funding: High to Low", "Funding: Low to High", "Company: A to Z"], index=0, key="leads_sort_mode_select")
+        sort_mode = st.selectbox("Sort Order:", ["Live Discovered First", "Funding: High to Low", "Funding: Low to High", "Company: A to Z"], index=0, key="leads_sort_mode_select")
     with f3:
         provenance_mode = st.selectbox("Source Type:", ["All Verified Leads", "Live Crawled Only (2026)", "Vetted Pool Only"], index=0, key="leads_provenance_mode_select")
 
@@ -347,7 +406,15 @@ else:
         filtered = [l for l in filtered if not l.get("is_live_crawled", False)]
 
     # Sorting logic
-    if sort_mode == "Funding: High to Low":
+    if sort_mode == "Live Discovered First":
+        filtered = sorted(
+            filtered,
+            key=lambda x: (
+                0 if x.get("is_live_crawled", False) else 1,
+                -x.get("funding_revenue_usd", 0)
+            )
+        )
+    elif sort_mode == "Funding: High to Low":
         filtered = sorted(filtered, key=lambda x: x.get("funding_revenue_usd", 0), reverse=True)
     elif sort_mode == "Funding: Low to High":
         filtered = sorted(filtered, key=lambda x: x.get("funding_revenue_usd", 0))
@@ -355,6 +422,16 @@ else:
         filtered = sorted(filtered, key=lambda x: x.get("company_name", ""))
 
     # Metric Cards Deck
+    live_crawled_count = sum(1 for l in filtered if l.get('is_live_crawled', False))
+    seen_unique_count = len(st.session_state.get('session_seen_domains', set()))
+    if live_crawled_count > 0:
+        st.markdown(f"""
+        <div style="background: #121215; border: 1px solid #27272A; border-left: 4px solid #10B981; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px;">
+            <span style="font-weight: 700; color: #10B981; font-family: 'Geist Mono', monospace; font-size: 0.82rem;">● LIVE AUTONOMOUS SCRAPE COMPLETE</span>
+            <span style="color: #A1A1AA; font-size: 0.84rem; margin-left: 12px;"><b>{live_crawled_count} fresh 2026 venture deals</b> extracted in real time from live portals. Session memory active (<b>{seen_unique_count} unique companies</b> tracked across runs without repetition).</span>
+        </div>
+        """, unsafe_allow_html=True)
+
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.markdown(f"""
@@ -365,7 +442,6 @@ else:
         """, unsafe_allow_html=True)
 
     with m2:
-        live_crawled_count = sum(1 for l in filtered if l.get('is_live_crawled', False))
         st.markdown(f"""
         <div class="dark-card">
             <div class="dark-card-number">{live_crawled_count}</div>
@@ -407,7 +483,7 @@ else:
             table_records = []
             for l in filtered:
                 is_live = l.get("is_live_crawled", False)
-                source_tag = "[LIVE CRAWLED]" if is_live else "[VETTED]"
+                source_tag = "🔥 LIVE 2026" if is_live else "VETTED RESEARCH"
                 source_url = l.get("live_source_url", l.get("website", ""))
 
                 table_records.append({

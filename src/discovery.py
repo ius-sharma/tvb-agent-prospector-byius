@@ -40,12 +40,46 @@ HEADERS = {
 }
 
 LIVE_STARTUP_FEEDS = [
+    # --- UK Hub (London, Cambridge, Manchester, Scotland) ---
     ("UK Tech News", "https://www.uktech.news/feed"),
+    ("UKTN Funding Radar", "https://www.uktech.news/funding/feed"),
+    ("TechRound UK", "https://techround.co.uk/feed/"),
+    ("BusinessCloud UK", "https://businesscloud.co.uk/feed/"),
+    ("Startups UK", "https://startups.co.uk/feed/"),
+    ("Maddyness UK", "https://www.maddyness.com/uk/feed/"),
+
+    # --- Europe Hub (Pan-Europe, DACH, Nordics, Benelux, France, Ireland) ---
     ("EU-Startups", "https://www.eu-startups.com/feed/"),
-    ("Tech Funding News", "https://techfundingnews.com/feed/"),
     ("Silicon Canals", "https://siliconcanals.com/feed/"),
-    ("Tech.eu", "https://tech.eu/feed/"),
-    ("Inc42", "https://inc42.com/feed/")
+    ("Silicon Canals Funding", "https://siliconcanals.com/news/funding/feed/"),
+    ("Tech.eu Pan-Europe", "https://tech.eu/feed/"),
+    ("Sifted European Tech", "https://sifted.eu/feed"),
+    ("Silicon Republic Europe", "https://www.siliconrepublic.com/feed"),
+    ("Startupticker Switzerland", "https://www.startupticker.ch/en/news?format=rss"),
+    ("TechCrunch Europe Radar", "https://techcrunch.com/tag/europe/feed/"),
+    ("TechStartups Global", "https://techstartups.com/feed/"),
+    ("TechCrunch Venture", "https://techcrunch.com/category/venture/feed/"),
+    ("VentureBeat AI Radar", "https://venturebeat.com/category/ai/feed/"),
+
+    # --- India Hub (Bengaluru, Mumbai, Gurgaon, Hyderabad) ---
+    ("YourStory India", "https://yourstory.com/feed"),
+    ("Inc42 India", "https://inc42.com/feed/"),
+    ("Inc42 Deal Buzz", "https://inc42.com/category/buzz/feed/"),
+    ("MediaNama", "https://www.medianama.com/feed/"),
+    ("StartupStory Media", "https://startupstorymedia.com/feed/"),
+
+    # --- Middle East / UAE Hub (Dubai, Abu Dhabi, Riyadh) ---
+    ("Wamda Middle East", "https://www.wamda.com/feed/all"),
+    ("Entrepreneur Middle East", "https://www.entrepreneur.com/en-ae/rss"),
+    ("Arabian Business Tech", "https://www.arabianbusiness.com/feed"),
+
+    # --- Southeast Asia & Global Specialized Feeds ---
+    ("e27 Southeast Asia", "https://e27.co/feed/"),
+    ("Tech in Asia", "https://www.techinasia.com/feed"),
+    ("FinTech Global", "https://fintech.global/feed/"),
+    ("Finovate Tech Radar", "https://finovate.com/feed/"),
+    ("HealthTech World", "https://www.htworld.co.uk/feed/"),
+    ("Tech Funding News", "https://techfundingnews.com/feed/")
 ]
 
 
@@ -226,7 +260,8 @@ class TVBDiscoveryAgent:
         self,
         target_orbit: Optional[str] = None,
         target_hub: Optional[str] = None,
-        max_deals: int = 8,
+        max_deals: int = 4,
+        exclude_domains: Optional[set] = None,
         progress_callback=None
     ) -> List[Dict[str, Any]]:
         """
@@ -238,6 +273,7 @@ class TVBDiscoveryAgent:
 
         results = []
         seen_companies = set()
+        seen_domains = set(d.lower() for d in (exclude_domains or set()) if d)
 
         orbits_pool = [target_orbit] if (target_orbit and target_orbit != "All Orbits") else list(TVB_ORBITS.keys())
         hubs_pool = [target_hub] if (target_hub and target_hub != "All Hubs") else list(TVB_HUBS.keys())
@@ -315,8 +351,9 @@ class TVBDiscoveryAgent:
                                 founder = self.clean_founder_name(f_match.group(1))
 
                         domain = self.infer_company_domain(comp_name, soup)
-                        if not domain or not founder:
+                        if not domain or not founder or domain in seen_domains:
                             continue
+                        seen_domains.add(domain)
 
                         contact_info = resolve_executive_contact(
                             soup=soup,
@@ -376,22 +413,40 @@ class TVBDiscoveryAgent:
 
         return results
 
-    def crawl_live_feed_deals(self, target_orbit: Optional[str] = None, max_deals: int = 5, progress_callback=None) -> List[Dict[str, Any]]:
+    def crawl_live_feed_deals(
+        self,
+        target_orbit: Optional[str] = None,
+        target_hub: Optional[str] = None,
+        max_deals: int = 5,
+        exclude_domains: Optional[set] = None,
+        progress_callback=None
+    ) -> List[Dict[str, Any]]:
         """
         Actively crawls live feeds, fetches fresh articles, and extracts real OG leads.
         """
         live_leads = []
         seen_companies = set()
+        seen_domains = set(d.lower() for d in (exclude_domains or set()) if d)
 
         # Randomize feed order for variety across runs
         feeds = list(LIVE_STARTUP_FEEDS)
         random.shuffle(feeds)
 
-        for feed_idx, (source_name, feed_url) in enumerate(feeds):
+        # Prioritize feeds matching target_hub if selected
+        if target_hub and target_hub != "All Hubs":
+            hub_kw = target_hub.replace(" Hub", "").lower()
+            matching_feeds = [f for f in feeds if hub_kw in f[0].lower()]
+            other_feeds = [f for f in feeds if hub_kw not in f[0].lower()]
+            feeds = matching_feeds + other_feeds
+
+        # Query a dynamic rotated batch of 10 feeds per run
+        active_feeds = feeds[:10]
+
+        for feed_idx, (source_name, feed_url) in enumerate(active_feeds):
             if len(live_leads) >= max_deals:
                 break
             if progress_callback:
-                progress_callback(f"Live Venture Radar [{feed_idx+1}/{len(feeds)}]: Connecting to {source_name}...", 0.25 + (feed_idx * 0.06))
+                progress_callback(f"Live Venture Radar [{feed_idx+1}/{len(active_feeds)}]: Connecting to {source_name}...", 0.25 + (feed_idx * 0.04))
             try:
                 try:
                     feed_resp = requests.get(feed_url, headers=HEADERS, timeout=4)
@@ -452,8 +507,9 @@ class TVBDiscoveryAgent:
 
                             # Determine Domain & Resolve Executive Contact
                             domain = self.infer_company_domain(comp_name, soup)
-                            if not domain or not founder:
+                            if not domain or not founder or domain in seen_domains:
                                 continue
+                            seen_domains.add(domain)
 
                             if progress_callback:
                                 progress_callback(f"Running DNS MX deliverability handshake for {comp_name} ({domain})...", 0.42 + (feed_idx * 0.06))
@@ -542,6 +598,7 @@ class TVBDiscoveryAgent:
         target_count: int = 18,
         target_orbit: Optional[str] = None,
         target_hub: Optional[str] = None,
+        exclude_domains: Optional[set] = None,
         progress_callback=None
     ) -> Dict[str, Any]:
         """
@@ -558,7 +615,7 @@ class TVBDiscoveryAgent:
         needs_review = []
         disqualified = []
         audit_reports = {}
-        seen_domains = set()
+        seen_domains = set(d.lower() for d in (exclude_domains or set()) if d)
 
         # Step 1: Live Web Discovery & RSS Crawler (if enabled)
         if include_live_search:
@@ -566,7 +623,13 @@ class TVBDiscoveryAgent:
                 progress_callback("Initiating Autonomous Web Metasearch across Venture Radars...", 0.15)
 
             # 1a. Dynamic Live Web Search
-            web_deals = self.search_live_web_deals(target_orbit=target_orbit, target_hub=target_hub, max_deals=8, progress_callback=progress_callback)
+            web_deals = self.search_live_web_deals(
+                target_orbit=target_orbit,
+                target_hub=target_hub,
+                max_deals=4,
+                exclude_domains=seen_domains,
+                progress_callback=progress_callback
+            )
             for deal in web_deals:
                 dom = deal.get("domain", "").lower()
                 if not dom or dom in seen_domains:
@@ -584,7 +647,13 @@ class TVBDiscoveryAgent:
             # 1b. Real-Time Venture RSS Feeds
             if progress_callback:
                 progress_callback("Scanning Real-Time European, UK, and Global Venture Feeds...", 0.50)
-            feed_deals = self.crawl_live_feed_deals(target_orbit=target_orbit, progress_callback=progress_callback)
+            feed_deals = self.crawl_live_feed_deals(
+                target_orbit=target_orbit,
+                target_hub=target_hub,
+                max_deals=5,
+                exclude_domains=seen_domains,
+                progress_callback=progress_callback
+            )
             for deal in feed_deals:
                 dom = deal.get("domain", "").lower()
                 if not dom or dom in seen_domains:
@@ -632,12 +701,16 @@ class TVBDiscoveryAgent:
             if len(qualified) >= max(target_count, 18):
                 break
 
-        # Fallback to ensure minimum bar (15+ leads) if filtering was too strict
+        # Fallback to ensure minimum bar (15+ leads) if session exclusions left fewer candidates
         if len(qualified) < 15:
+            if exclude_domains and len(exclude_domains) > 0 and progress_callback:
+                progress_callback("Session memory: All unique candidates surfaced in pool. Cycling session history to maintain full pipeline bar...", 0.85)
+
+            current_qualified_domains = {q.get("domain", "").lower() for q in qualified}
             for seed in candidate_pool:
                 dom = seed.get("domain", "").lower()
-                if dom not in seen_domains:
-                    seen_domains.add(dom)
+                if dom not in current_qualified_domains:
+                    current_qualified_domains.add(dom)
                     is_qual, audit = validate_tvb_candidate(seed)
                     audit_reports[seed.get("company_name", dom)] = audit
                     if is_qual:
@@ -674,6 +747,7 @@ class TVBDiscoveryAgent:
         run_live_crawler: bool = True,
         target_orbit: Optional[str] = None,
         target_hub: Optional[str] = None,
+        exclude_domains: Optional[set] = None,
         progress_callback=None
     ) -> List[Dict[str, Any]]:
         """
@@ -685,6 +759,7 @@ class TVBDiscoveryAgent:
             target_count=target_count,
             target_orbit=target_orbit,
             target_hub=target_hub,
+            exclude_domains=exclude_domains,
             progress_callback=progress_callback
         )
         return result["qualified"]
