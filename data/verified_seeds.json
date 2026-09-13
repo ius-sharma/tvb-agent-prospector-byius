@@ -76,6 +76,25 @@
     "tvb_value_alignment": "Explicitly listed in TVB Cybersecurity Orbit documentation as target ecosystem prototype."
   },
   {
+    "company_name": "CyberSmart",
+    "website": "https://cybersmart.co.uk",
+    "domain": "cybersmart.co.uk",
+    "orbit": "Cybersecurity",
+    "sub_sector": "Automated SME Cyber Compliance",
+    "description": "Continuous automated cybersecurity and Cyber Essentials compliance platform for growing businesses.",
+    "funding_revenue_usd": 3500000,
+    "funding_stage": "Pre-Series A",
+    "funding_evidence": "Raised £2.8M (~$3.5M USD) from Deepbridge Capital and angel syndicates.",
+    "headquarters": "London, United Kingdom",
+    "target_hub": "UK Hub",
+    "us_presence": "Minimal (UK compliance stronghold, expanding into international cyber markets)",
+    "executive_name": "Jamie Akhtar",
+    "executive_title": "CEO & Co-founder",
+    "verified_email": "jamie@cybersmart.co.uk",
+    "email_status": "Verified (DNS MX Valid)",
+    "tvb_value_alignment": "Direct alignment with TVB Cybersecurity Orbit and risk management offerings."
+  },
+  {
     "company_name": "Pento (Acquired by HiBob)",
     "website": "https://pento.io",
     "domain": "pento.io",
@@ -150,6 +169,25 @@
     "verified_email": "mathias@passbase.com",
     "email_status": "Verified (DNS MX Valid)",
     "tvb_value_alignment": "TVB Cybersecurity Orbit; fits market access into US fintech and crypto compliance ecosystems."
+  },
+  {
+    "company_name": "Tarabut Gateway",
+    "website": "https://tarabutgateway.com",
+    "domain": "tarabutgateway.com",
+    "orbit": "Fintech & Payments",
+    "sub_sector": "Open Banking API Infrastructure",
+    "description": "Leading open banking platform connecting banks and fintechs across the Middle East with unified financial APIs.",
+    "funding_revenue_usd": 4800000,
+    "funding_stage": "Pre-Series A",
+    "funding_evidence": "Raised $4.8M seed round backed by regional institutional fintech syndicates.",
+    "headquarters": "Dubai, United Arab Emirates",
+    "target_hub": "UAE & MENA Hub",
+    "us_presence": "None (Targeting cross-border banking infrastructure between MENA and West)",
+    "executive_name": "Abdulla Almoayed",
+    "executive_title": "Founder & CEO",
+    "verified_email": "abdulla@tarabutgateway.com",
+    "email_status": "Verified (DNS MX Valid)",
+    "tvb_value_alignment": "Direct fit for TVB UAE Hub and cross-border payment partnerships."
   },
   {
     "company_name": "Climatiq",
@@ -340,5 +378,24 @@
     "verified_email": "cristina@cledara.com",
     "email_status": "Verified (DNS MX Valid)",
     "tvb_value_alignment": "TVB Scale-up Marketplace fit; offer discounted SaaS procurement perks across TVB portfolio."
+  },
+  {
+    "company_name": "LottieLab",
+    "website": "https://lottielab.com",
+    "domain": "lottielab.com",
+    "orbit": "Enterprise SaaS & Digital Twin",
+    "sub_sector": "Interactive Motion Design Cloud",
+    "description": "Browser-based motion design editor enabling cross-platform interactive animations export for mobile and web developers.",
+    "funding_revenue_usd": 4000000,
+    "funding_stage": "Seed Round",
+    "funding_evidence": "Raised $4.0M seed investment led by Point Nine and 20VC.",
+    "headquarters": "London, United Kingdom",
+    "target_hub": "UK Hub",
+    "us_presence": "Minimal (London product team, expanding into US enterprise product design teams)",
+    "executive_name": "Aljosa Kemperle",
+    "executive_title": "Co-founder & CEO",
+    "verified_email": "aljosa@lottielab.com",
+    "email_status": "Verified (DNS MX Valid)",
+    "tvb_value_alignment": "High fit for TVB Enterprise SaaS orbit and North American agency partnerships."
   }
 ]

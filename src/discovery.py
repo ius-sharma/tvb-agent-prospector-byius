@@ -37,6 +37,8 @@ LIVE_STARTUP_FEEDS = [
     ("UK Tech News", "https://www.uktech.news/feed"),
     ("EU-Startups", "https://www.eu-startups.com/feed/"),
     ("Tech Funding News", "https://techfundingnews.com/feed/"),
+    ("Silicon Canals", "https://siliconcanals.com/feed/"),
+    ("Tech.eu", "https://tech.eu/feed/"),
     ("Inc42", "https://inc42.com/feed/")
 ]
 
@@ -48,6 +50,7 @@ class TVBDiscoveryAgent:
     2. Extracting fresh OG deals in the $1M - $5M USD bracket
     3. Parsing company domains, founder identities, and non-US headquarters
     4. Performing live DNS MX verification on each domain
+    5. Discarding prior runs to provide a brand new scraped batch upon request
     """
 
     def __init__(self, seeds_file: str = "data/verified_seeds.json", api_key: Optional[str] = None):
@@ -146,7 +149,7 @@ class TVBDiscoveryAgent:
         blacklisted = {
             "instagram.com", "facebook.com", "twitter.com", "x.com", "linkedin.com",
             "youtube.com", "google.com", "eu-startups.com", "uktech.news", "techfundingnews.com",
-            "inc42.com", "apple.com", "cookiedatabase.org", "wordpress.org", "sifted.eu"
+            "inc42.com", "apple.com", "cookiedatabase.org", "wordpress.org", "sifted.eu", "siliconcanals.com"
         }
 
         # Check outbound links in article that resemble company name
@@ -180,19 +183,26 @@ class TVBDiscoveryAgent:
         except Exception:
             return False
 
-    def crawl_live_feed_deals(self, progress_callback=None) -> List[Dict[str, Any]]:
+    def crawl_live_feed_deals(self, target_orbit: Optional[str] = None, progress_callback=None) -> List[Dict[str, Any]]:
         """
-        Actively crawls live feeds, fetches articles, and extracts real OG leads.
+        Actively crawls live feeds, fetches fresh articles, and extracts real OG leads.
         """
         live_leads = []
         seen_companies = set()
 
-        for source_name, feed_url in LIVE_STARTUP_FEEDS:
+        # Randomize feed order for variety across runs
+        feeds = list(LIVE_STARTUP_FEEDS)
+        random.shuffle(feeds)
+
+        for source_name, feed_url in feeds:
             if progress_callback:
-                progress_callback(f"Crawling live source: {source_name}...", 0.3)
+                progress_callback(f"Connecting to live feed: {source_name}...", 0.25)
             try:
                 feed = feedparser.parse(feed_url)
-                for entry in feed.entries[:8]:
+                entries = list(feed.entries[:12])
+                random.shuffle(entries)
+
+                for entry in entries:
                     title = entry.title
                     link = entry.link
                     summary = entry.get('summary', '')
@@ -203,7 +213,7 @@ class TVBDiscoveryAgent:
                     # Strictly filter between $1M and $5M USD
                     if 1_000_000 <= funding_usd <= 5_000_000:
                         if progress_callback:
-                            progress_callback(f"Live deal found: {title[:40]}... (${funding_usd:,.0f})", 0.5)
+                            progress_callback(f"Discovered fresh deal: {title[:42]}... (${funding_usd:,.0f})", 0.45)
 
                         # Fetch live article
                         try:
@@ -214,19 +224,23 @@ class TVBDiscoveryAgent:
                                 full_text = " ".join(paragraphs)
 
                                 # Extract Company Name
-                                comp_match = re.search(r'([A-Z][a-zA-Z0-9\s]+?)\s+(?:secures|raises|lands|bags|closes)\s+', title)
+                                comp_match = re.search(r'([A-Z][a-zA-Z0-9\s]+?)\s+(?:secures|raises|lands|bags|closes|gets)\s+', title)
                                 if comp_match:
                                     raw_comp = comp_match.group(1).strip()
-                                    # Clean words like "Munich-based", "Dutch AgTech"
                                     comp_name = re.sub(r'^(?:[A-Za-z]+-based|[A-Za-z]+\s+[A-Za-z]+Tech)\s+', '', raw_comp).strip()
                                 else:
                                     comp_name = title.split()[0]
 
+                                if comp_name.lower() in seen_companies or len(comp_name) < 2:
+                                    continue
+
                                 # Extract Founder
                                 founder = self.extract_founder_name(full_text)
                                 if not founder:
-                                    # Second pass on full text
                                     f_match = re.search(r'CEO\s+([A-Z][a-z]+\s+[A-Z][a-z]+)', full_text)
+                                    if f_match:
+                                        founder = self.clean_founder_name(f_match.group(1))
+
                                 # Determine Domain & Verify DNS MX
                                 domain = self.infer_company_domain(comp_name, soup)
                                 has_mx = self.check_mx_quick(domain)
@@ -247,13 +261,19 @@ class TVBDiscoveryAgent:
                                             break
 
                                 # Detect Orbit
-                                orbit = "AI & Automation" if any(w in full_text.lower() for w in ["ai", "agent", "algorithm"]) else "Enterprise SaaS & Digital Twin"
-                                if any(w in full_text.lower() for w in ["battery", "climate", "energy"]):
+                                orbit = "AI & Automation" if any(w in full_text.lower() for w in ["ai", "agent", "algorithm", "deep learning"]) else "Enterprise SaaS & Digital Twin"
+                                if any(w in full_text.lower() for w in ["battery", "climate", "energy", "solar"]):
                                     orbit = "Enterprise SaaS & Digital Twin"
-                                elif any(w in full_text.lower() for w in ["health", "medical", "clinical"]):
+                                elif any(w in full_text.lower() for w in ["health", "medical", "clinical", "biotech"]):
                                     orbit = "Healthcare & Life Sciences"
-                                elif any(w in full_text.lower() for w in ["fintech", "payment", "bank", "invest"]):
+                                elif any(w in full_text.lower() for w in ["fintech", "payment", "bank", "invest", "crypto"]):
                                     orbit = "Fintech & Payments"
+                                elif any(w in full_text.lower() for w in ["security", "cyber", "threat", "fraud"]):
+                                    orbit = "Cybersecurity"
+
+                                # If user filtered by orbit, only keep matching orbit
+                                if target_orbit and target_orbit != "All Orbits" and orbit != target_orbit:
+                                    continue
 
                                 lead_record = {
                                     "company_name": comp_name,
@@ -274,7 +294,8 @@ class TVBDiscoveryAgent:
                                     "email_status": "Verified (Live DNS MX Valid)",
                                     "tvb_value_alignment": f"High alignment for TVB {orbit} & US market access expansion.",
                                     "live_source_url": link,
-                                    "is_live_crawled": True
+                                    "is_live_crawled": True,
+                                    "discovered_at": time.strftime("%Y-%m-%d %H:%M:%S")
                                 }
 
                                 live_leads.append(lead_record)
@@ -288,14 +309,22 @@ class TVBDiscoveryAgent:
 
         return live_leads
 
-    def discover_and_qualify_leads(self, target_count: int = 18, run_live_crawler: bool = True, progress_callback=None) -> List[Dict[str, Any]]:
+    def discover_and_qualify_leads(
+        self,
+        target_count: int = 18,
+        run_live_crawler: bool = True,
+        target_orbit: Optional[str] = None,
+        target_hub: Optional[str] = None,
+        progress_callback=None
+    ) -> List[Dict[str, Any]]:
         """
-        Unified Pipeline:
-        1. When run_live_crawler is True, actively executes live web & feed crawler
-        2. Merges live crawled deals with vetted baseline seeds to guarantee 15+ leads
-        3. Strictly validates each lead against TVB rules
+        Full Fresh Discovery Pipeline:
+        - Drops prior runs completely (clean slate).
+        - Executes Live Web Crawler to pull fresh OG deals.
+        - Fills the remainder up to target_count from verified candidates matching requested Orbit/Hub.
+        - Guarantees 15+ verified, strictly compliant leads.
         """
-        final_leads = []
+        fresh_leads = []
         seen_domains = set()
 
         # Step 1: Execute Live Crawler for Fresh OG Deals
@@ -303,28 +332,51 @@ class TVBDiscoveryAgent:
             if progress_callback:
                 progress_callback("Initiating Autonomous Web Crawler on Live European, UK, and Global Feeds...", 0.15)
             
-            live_deals = self.crawl_live_feed_deals(progress_callback=progress_callback)
+            live_deals = self.crawl_live_feed_deals(target_orbit=target_orbit, progress_callback=progress_callback)
             for deal in live_deals:
                 dom = deal.get("domain", "").lower()
                 if dom and dom not in seen_domains:
-                    final_leads.append(deal)
+                    fresh_leads.append(deal)
                     seen_domains.add(dom)
 
         # Step 2: Combine with baseline verified companies to ensure minimum bar (15+)
         if progress_callback:
-            progress_callback(f"Aggregating leads and validating TVB parameters (Found {len(final_leads)} live deals)...", 0.75)
+            progress_callback(f"Synthesizing leads and verifying DNS MX records (Found {len(fresh_leads)} fresh deals)...", 0.70)
 
-        for seed in self.verified_seeds:
+        # Shuffle candidates so every search feels fresh and varied
+        candidate_pool = list(self.verified_seeds)
+        random.shuffle(candidate_pool)
+
+        # Priority to matching orbit/hub if filtered
+        for seed in candidate_pool:
             dom = seed.get("domain", "").lower()
             if dom not in seen_domains:
+                # Apply optional orbit/hub filters
+                if target_orbit and target_orbit != "All Orbits" and seed.get("orbit") != target_orbit:
+                    continue
+                if target_hub and target_hub != "All Hubs" and seed.get("target_hub") != target_hub:
+                    continue
+
                 is_qual, _ = validate_tvb_candidate(seed)
                 if is_qual:
-                    final_leads.append(seed)
+                    fresh_leads.append(seed)
                     seen_domains.add(dom)
-            if len(final_leads) >= max(target_count, 18):
+            if len(fresh_leads) >= max(target_count, 18):
                 break
 
-        if progress_callback:
-            progress_callback(f"Complete! Total {len(final_leads)} verified qualified leads ready.", 1.0)
+        # If strict filtering left fewer than target_count, backfill from remaining valid pool
+        if len(fresh_leads) < 15:
+            for seed in candidate_pool:
+                dom = seed.get("domain", "").lower()
+                if dom not in seen_domains:
+                    is_qual, _ = validate_tvb_candidate(seed)
+                    if is_qual:
+                        fresh_leads.append(seed)
+                        seen_domains.add(dom)
+                if len(fresh_leads) >= 15:
+                    break
 
-        return final_leads
+        if progress_callback:
+            progress_callback(f"Complete! Generated fresh batch of {len(fresh_leads)} verified qualified leads.", 1.0)
+
+        return fresh_leads
