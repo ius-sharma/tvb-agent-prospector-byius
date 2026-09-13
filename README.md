@@ -71,29 +71,3 @@ streamlit run app.py
 ```
 
 Open `http://localhost:8501`.
-
-## Deployment
-
-Streamlit Community Cloud is the fastest deployment path:
-
-1. Push this repository to a public GitHub repo.
-2. Go to `https://share.streamlit.io`.
-3. Create a new app from the repo.
-4. Select branch `main`.
-5. Set main file path to `app.py`.
-6. Deploy and copy the public app URL.
-
-No paid API key is required for the default flow.
-
-## Submission Checklist
-
-- Public GitHub repository
-- Live hosted Streamlit/Render/Railway/Replit/Vercel link
-- README included
-- App opens without setup
-- Reviewer can trigger a run from the UI
-- Qualified lead table contains at least 15 records
-- CSV export works
-- Google Form submitted before the deadline
-
-Submission form from TVB: `https://forms.gle/b2oekZ6uKex8dsuL7`
