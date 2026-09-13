@@ -14,9 +14,26 @@ from src.enrichment import verify_executive_email
 
 
 US_LOCATIONS = {
-    "united states", "usa", "u.s.", "u.s.a.", "california", "new york", "san francisco",
-    "silicon valley", "austin", "texas", "seattle", "boston", "chicago", "los angeles",
-    "delaware", "miami", "denver"
+    # Full country names
+    "united states", "usa", "u.s.", "u.s.a.", "united states of america",
+    # Major US states & territories
+    "california", "texas", "new york", "massachusetts", "washington", "florida",
+    "illinois", "colorado", "delaware", "georgia", "north carolina", "virginia",
+    "pennsylvania", "ohio", "michigan", "new jersey", "connecticut", "utah", "arizona",
+    # Two-letter state abbreviations
+    "ca", "tx", "ny", "ma", "wa", "fl", "il", "co", "de", "ga", "nc", "va", "pa", "nj",
+    # Major US tech metro centers
+    "san francisco", "sf bay area", "bay area", "silicon valley", "austin", "seattle",
+    "boston", "new york city", "nyc", "chicago", "los angeles", "la", "san jose",
+    "palo alto", "mountain view", "sunnyvale", "menlo park", "cupertino", "san diego",
+    "miami", "denver", "boulder", "atlanta", "dallas", "houston"
+}
+
+DISQUALIFYING_US_PRESENCE_SIGNALS = {
+    "strong us presence", "major us presence", "headquartered in us",
+    "us headquarters", "relocated to us", "moved to us", "primary market in us",
+    "incorporated in delaware with us operations", "majority us team",
+    "us-based team", "primary clinical deployment in us"
 }
 
 INACTIVE_SIGNALS = {
@@ -27,34 +44,73 @@ INACTIVE_SIGNALS = {
 
 def parse_funding_amount(text: str) -> float:
     """
-    Extracts numerical funding amount in USD from strings like '$3.5M', '€2.5M', '£3M', '3500000'.
-    Returns amount in USD.
+    Extracts numerical funding amount in USD from strings like '$3.5M', '€2.5M', '£3M', '₹25 Cr', '3500000'.
+    Normalizes GBP, EUR, and INR Crores to USD.
+    Guarantees that non-funding numbers (e.g. '4 angel investors', '3 years ago') are never falsely converted.
     """
     if not text:
         return 0.0
-        
+
     text_str = str(text).strip()
-    
-    # Check if already a pure float/int
+
+    # Check if already a pure number (e.g. 3500000 or 3500000.0)
+    clean_num = text_str.replace(",", "").replace("$", "").strip()
     try:
-        val = float(text_str.replace(",", "").replace("$", ""))
-        return val
+        val = float(clean_num)
+        if val >= 100_000:
+            return val
     except ValueError:
         pass
 
-    # Regex for e.g. $2.5M, 3 million, $4M
-    match = re.search(r'[\$€£]?\s*(\d+(?:\.\d+)?)\s*(m|million|mn|k)?', text_str, re.IGNORECASE)
-    if match:
-        number = float(match.group(1))
-        unit = (match.group(2) or "").lower()
-        if unit in ["m", "million", "mn"]:
-            return number * 1_000_000
-        elif unit == "k":
-            return number * 1_000
-        elif number < 100:  # e.g. "3.5" meaning 3.5 million in funding contexts
-            return number * 1_000_000
-        return number
+    # Check for billions first to reject mega rounds
+    billion_match = re.search(r'(?:([$€£₹])|(USD|EUR|GBP|INR))\s*(\d+(?:\.\d+)?)\s*(b|billion|bn)\b', text_str, re.IGNORECASE)
+    if billion_match:
+        val = float(billion_match.group(3))
+        mult = 1.30 if (billion_match.group(1) == '£' or billion_match.group(2) == 'GBP') else (1.08 if (billion_match.group(1) == '€' or billion_match.group(2) == 'EUR') else 1.0)
+        return val * 1_000_000_000 * mult
 
+    # Pattern 1: Explicit Currency Symbol/Code with number and unit (e.g. $3.5M, €4.2M, £2.8m, ₹25 Cr)
+    m = re.search(r'(?:([$€£₹])|(USD|EUR|GBP|INR))\s*(\d+(?:\.\d+)?)\s*(m|million|mn|k|crore|cr)?\b', text_str, re.IGNORECASE)
+    if m:
+        sym = m.group(1) or ""
+        code = (m.group(2) or "").upper()
+        val = float(m.group(3))
+        unit = (m.group(4) or "").lower()
+
+        if sym == '£' or code == 'GBP':
+            mult = 1.30
+        elif sym == '€' or code == 'EUR':
+            mult = 1.08
+        elif sym == '₹' or code == 'INR' or unit in ["crore", "cr"]:
+            mult = 0.012
+        else:
+            mult = 1.00
+
+        if unit in ["crore", "cr"]:
+            return val * 10_000_000 * mult
+        elif unit in ["m", "million", "mn"]:
+            return val * 1_000_000 * mult
+        elif unit == "k":
+            return val * 1_000 * mult
+        elif sym or code:
+            if 1.0 <= val <= 25.0:
+                return val * 1_000_000 * mult
+            elif val >= 100_000:
+                return val * mult
+
+    # Pattern 2: Number followed explicitly by funding unit (e.g. "raised 2.5 million", "seed of 3m")
+    m2 = re.search(r'\b(\d+(?:\.\d+)?)\s*(million|mn)\b', text_str, re.IGNORECASE)
+    if m2:
+        val = float(m2.group(1))
+        return val * 1_000_000
+
+    # Pattern 3: Indian Crores without explicit symbol (e.g. "raised 25 crore in seed")
+    m3 = re.search(r'\b(\d+(?:\.\d+)?)\s*(crore|cr)\b', text_str, re.IGNORECASE)
+    if m3:
+        val = float(m3.group(1))
+        return val * 10_000_000 * 0.012
+
+    # Non-monetary numbers ("4 angel investors", "founded 3 years ago") are safely rejected as 0.0
     return 0.0
 
 
@@ -71,25 +127,46 @@ def is_tech_platform(description: str, sector: str) -> bool:
 
 def has_minimal_us_presence(headquarters: str, location_notes: str) -> bool:
     """
-    Verifies that headquarters is outside the US and US presence is minimal to none.
+    Strictly verifies that the company is headquartered outside the US and operates
+    with minimal to no US footprint, preventing US entities from leaking through.
     """
-    combined = f"{headquarters} {location_notes}".lower()
-    
-    # Check if foreign hub is explicitly identified
+    if not headquarters:
+        return False
+
+    hq_lower = headquarters.strip().lower()
+    notes_lower = (location_notes or "").strip().lower()
+
+    # 1. Direct Headquarters Check: Any US city, state, or country name in HQ is an immediate reject
+    for loc in US_LOCATIONS:
+        if len(loc) <= 2:
+            pattern = rf"(?:^|[\s,;/\-])(?:{re.escape(loc)})(?:$|[\s,;/\-])"
+        else:
+            pattern = rf"\b{re.escape(loc)}\b"
+
+        if re.search(pattern, hq_lower):
+            return False
+
+    # 2. Strong/Disqualifying US Presence in location notes
+    for signal in DISQUALIFYING_US_PRESENCE_SIGNALS:
+        if signal in notes_lower:
+            return False
+
+    # 3. Positively identify non-US hub origin or international headquarters
     non_us_found = False
     for hub_name, cities_countries in TVB_HUBS.items():
-        if any(c.lower() in combined for c in cities_countries):
+        if any(c.lower() in hq_lower or c.lower() in notes_lower for c in cities_countries):
             non_us_found = True
             break
-            
-    # Check for direct US headquarters disqualification
-    for us_loc in US_LOCATIONS:
-        pattern = rf"\b{re.escape(us_loc)}\b"
-        if re.search(pattern, headquarters.lower()):
-            return False
-            
-    hq_lower = headquarters.lower()
-    return non_us_found or not any(re.search(rf"\b{re.escape(loc)}\b", hq_lower) for loc in US_LOCATIONS)
+
+    if non_us_found:
+        return True
+
+    # 4. If no explicit hub match, ensure no residual US references exist in HQ
+    has_us = any(
+        re.search(rf"\b{re.escape(loc)}\b", hq_lower)
+        for loc in US_LOCATIONS if len(loc) > 2
+    )
+    return not has_us
 
 
 def has_disqualifying_status(candidate: Dict[str, Any]) -> bool:
