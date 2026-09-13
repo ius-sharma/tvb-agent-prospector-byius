@@ -198,13 +198,15 @@ with st.sidebar:
     selected_orbit = st.selectbox(
         "Focus Orbit:",
         options=["All Orbits"] + list(TVB_ORBITS.keys()),
-        key="selected_orbit_select"
+        index=0,
+        key="filter_orbit"
     )
 
     selected_hub = st.selectbox(
         "Geographic Hub:",
         options=["All Hubs"] + list(TVB_HUBS.keys()),
-        key="selected_hub_select"
+        index=0,
+        key="filter_hub"
     )
 
     st.divider()
@@ -320,9 +322,9 @@ else:
     with f1:
         search_query = st.text_input("Filter Leads (Company, Sector, Founder):", "", key="leads_search_query_input")
     with f2:
-        sort_mode = st.selectbox("Sort Order:", ["Funding: High to Low", "Funding: Low to High", "Company: A to Z"], key="leads_sort_mode_select")
+        sort_mode = st.selectbox("Sort Order:", ["Funding: High to Low", "Funding: Low to High", "Company: A to Z"], index=0, key="leads_sort_mode_select")
     with f3:
-        provenance_mode = st.selectbox("Source Type:", ["All Verified Leads", "Live Crawled Only (2026)", "Vetted Pool Only"], key="leads_provenance_mode_select")
+        provenance_mode = st.selectbox("Source Type:", ["All Verified Leads", "Live Crawled Only (2026)", "Vetted Pool Only"], index=0, key="leads_provenance_mode_select")
 
     # Filter evaluation
     filtered = current_leads
@@ -495,6 +497,7 @@ else:
             selected_comp = st.selectbox(
                 "Select Company to Inspect Validation Record:",
                 options=[l.get("company_name") for l in filtered],
+                index=0,
                 key="audit_company_inspect_select"
             )
 
