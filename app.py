@@ -197,17 +197,19 @@ with st.sidebar:
     st.markdown("### SEARCH VECTORS")
     selected_orbit = st.selectbox(
         "Focus Orbit:",
-        options=["All Orbits"] + list(TVB_ORBITS.keys())
+        options=["All Orbits"] + list(TVB_ORBITS.keys()),
+        key="selected_orbit_select"
     )
 
     selected_hub = st.selectbox(
         "Geographic Hub:",
-        options=["All Hubs"] + list(TVB_HUBS.keys())
+        options=["All Hubs"] + list(TVB_HUBS.keys()),
+        key="selected_hub_select"
     )
 
     st.divider()
     st.markdown("### BENCHMARK CONTROLS")
-    if st.button("LOAD VETTED BENCHMARK POOL", use_container_width=True):
+    if st.button("LOAD VETTED BENCHMARK POOL", use_container_width=True, key="btn_load_benchmark"):
         agent = TVBDiscoveryAgent()
         st.session_state.leads = agent.discover_and_qualify_leads(
             target_count=18,
@@ -244,7 +246,7 @@ st.write("")
 col_act1, col_act2, col_meta = st.columns([2.3, 1.2, 1.5])
 
 with col_act1:
-    if st.button("RUN LIVE AUTONOMOUS WEB DISCOVERY", use_container_width=True):
+    if st.button("RUN LIVE AUTONOMOUS WEB DISCOVERY", use_container_width=True, key="btn_run_live_discovery"):
         # Reset state completely for fresh scrape
         st.session_state.leads = []
         
@@ -283,7 +285,7 @@ with col_act1:
         st.rerun()
 
 with col_act2:
-    if st.button("CLEAR ALL LEADS", use_container_width=True):
+    if st.button("CLEAR ALL LEADS", use_container_width=True, key="btn_clear_all_leads"):
         st.session_state.leads = []
         st.session_state.last_run_time = "CLEARED"
         st.rerun()
@@ -316,11 +318,11 @@ else:
     # Filter Bar
     f1, f2, f3 = st.columns([2, 1.4, 1.4])
     with f1:
-        search_query = st.text_input("Filter Leads (Company, Sector, Founder):", "")
+        search_query = st.text_input("Filter Leads (Company, Sector, Founder):", "", key="leads_search_query_input")
     with f2:
-        sort_mode = st.selectbox("Sort Order:", ["Funding: High to Low", "Funding: Low to High", "Company: A to Z"])
+        sort_mode = st.selectbox("Sort Order:", ["Funding: High to Low", "Funding: Low to High", "Company: A to Z"], key="leads_sort_mode_select")
     with f3:
-        provenance_mode = st.selectbox("Source Type:", ["All Verified Leads", "Live Crawled Only (2026)", "Vetted Pool Only"])
+        provenance_mode = st.selectbox("Source Type:", ["All Verified Leads", "Live Crawled Only (2026)", "Vetted Pool Only"], key="leads_provenance_mode_select")
 
     # Filter evaluation
     filtered = current_leads
@@ -457,20 +459,71 @@ else:
 
     with tab_audit:
         st.markdown("#### COMPLIANCE VERIFICATION AUDIT")
-        st.caption("Conservative rule-based audit certifying zero synthetic or hallucinated contacts.")
+        st.caption("Conservative rule-based validation engine auditing candidates against TVB screening parameters.")
         if filtered:
-            audit_list = []
+            audit_rows = []
+            audit_details_map = {}
+
             for l in filtered:
-                audit_list.append({
-                    "COMPANY": l.get("company_name"),
-                    "FUNDING RANGE ($1M-$5M)": "PASS",
-                    "TECH PLATFORM": "PASS",
-                    "NON-US HEADQUARTERS": "PASS",
-                    "EXECUTIVE IDENTIFIED": "PASS",
-                    "DNS MX DELIVERABILITY": "PASS",
-                    "STATUS": "QUALIFIED"
+                is_qual, rep = validate_tvb_candidate(l)
+                comp_name = l.get("company_name", "Unknown")
+                audit_details_map[comp_name] = (l, rep)
+
+                funding_status = "PASS" if rep["funding_valid"] else "FAIL"
+                tech_status = "PASS" if rep["tech_valid"] else "FAIL"
+                location_status = "PASS" if rep["non_us_valid"] else "FAIL"
+                contact_status = "PASS" if rep["contact_valid"] else "FAIL"
+                active_status = "PASS" if rep["active_valid"] else "FAIL"
+                overall = "QUALIFIED" if is_qual else "DISQUALIFIED"
+
+                audit_rows.append({
+                    "COMPANY": comp_name,
+                    "FUNDING ($1M-$5M)": f"{funding_status} (${rep['parsed_funding_usd']:,.0f})",
+                    "TECH PLATFORM": tech_status,
+                    "NON-US HQ": f"{location_status} ({l.get('headquarters', 'N/A')[:18]})",
+                    "EXECUTIVE CONTACT": f"{contact_status} ({l.get('executive_name', 'N/A')[:16]})",
+                    "EMAIL & MX": "PASS" if rep["email_details"].get("verified") else "FAIL",
+                    "ACTIVE ENTITY": active_status,
+                    "OVERALL AUDIT": overall
                 })
-            st.table(pd.DataFrame(audit_list))
+
+            df_audit = pd.DataFrame(audit_rows)
+            st.dataframe(df_audit, use_container_width=True, hide_index=True)
+
+            st.write("")
+            st.markdown("##### DETAILED CANDIDATE AUDIT TRAIL")
+            selected_comp = st.selectbox(
+                "Select Company to Inspect Validation Record:",
+                options=[l.get("company_name") for l in filtered],
+                key="audit_company_inspect_select"
+            )
+
+            if selected_comp and selected_comp in audit_details_map:
+                cand, rep = audit_details_map[selected_comp]
+                
+                col_a1, col_a2 = st.columns(2)
+                with col_a1:
+                    st.markdown(f"**Company:** `{cand.get('company_name')}`")
+                    st.markdown(f"**Parsed Funding:** `${rep.get('parsed_funding_usd', 0):,.0f} USD` — {'Valid Range' if rep.get('funding_valid') else 'Out of Range'}")
+                    st.markdown(f"**Tech Focus Alignment:** {'Verified scalable tech platform' if rep.get('tech_valid') else 'Non-tech entity'}")
+                    st.markdown(f"**HQ & Geography:** `{cand.get('headquarters')}` ({'Minimal/No US presence confirmed' if rep.get('non_us_valid') else 'US Presence Detected'})")
+                    st.markdown(f"**Corporate Standalone Status:** {'Active standalone scale-up' if rep.get('active_valid') else 'Inactive or Acquired'}")
+
+                with col_a2:
+                    st.markdown(f"**Identified Executive:** `{cand.get('executive_name')}` ({cand.get('executive_title', 'Executive')})")
+                    st.markdown(f"**Target Email:** `{cand.get('verified_email', 'Unpublished')}`")
+                    st.markdown(f"**Email Deliverability Check:** `{rep.get('email_details', {}).get('reason', 'N/A')}`")
+                    st.markdown(f"**Contact Provenance:** `{rep.get('contact_provenance', 'direct_extraction')}`")
+                    if rep.get("warnings"):
+                        for w in rep["warnings"]:
+                            st.warning(f"Audit Warning: {w}")
+                    if rep.get("disqualification_reasons"):
+                        for r in rep["disqualification_reasons"]:
+                            st.error(f"Disqualification Flag: {r}")
+
+                sources = rep.get("source_urls", [])
+                if sources:
+                    st.caption("Verified Audit Sources: " + " • ".join([f"[{u}]({u})" for u in sources[:4]]))
 
     with tab_actions:
         st.markdown("#### EXPORT & OUTREACH TOOLS")
@@ -485,12 +538,13 @@ else:
                     data=csv_buffer.getvalue(),
                     file_name=f"tvb_qualified_leads_run_{st.session_state.run_count}.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    use_container_width=True,
+                    key="download_leads_csv_btn"
                 )
             with e2:
                 st.markdown("**Executive Email Roster**")
                 emails = [l.get("verified_email") for l in filtered if l.get("verified_email")]
-                st.text_area("Copy-Paste Verified Founder Addresses:", ", ".join(emails), height=115)
+                st.text_area("Copy-Paste Verified Founder Addresses:", ", ".join(emails), height=115, key="founder_emails_textarea")
 
 st.divider()
 st.caption("THE VENTURE BUILD // PROSPECTING SYSTEM • ENGINEERED FOR APPLICATION SCREENING • ZERO SETUP DEPLOYMENT")
