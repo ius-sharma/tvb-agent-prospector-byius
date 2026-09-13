@@ -184,6 +184,8 @@ def validate_tvb_candidate(candidate: Dict[str, Any]) -> Tuple[bool, Dict[str, A
         "non_us_valid": non_us_valid,
         "contact_valid": contact_valid,
         "active_valid": active_valid,
+        "contact_provenance": candidate.get("contact_provenance", "verified_seed"),
+        "contact_audit_note": candidate.get("contact_audit_note", email_verification.get("reason", "")),
         "source_urls": source_urls,
         "email_details": email_verification,
         "disqualification_reasons": reasons,

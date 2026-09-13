@@ -447,7 +447,9 @@ else:
                     with c2:
                         st.markdown(f"**Key Executive:** `{l.get('executive_name')}` ({l.get('executive_title')})")
                         st.markdown(f"**Corporate Email:** `{l.get('verified_email')}` [DELIVERABLE]")
-                        st.markdown(f"**MX Verification:** `{l.get('email_status')}`")
+                        st.markdown(f"**Deliverability Status:** `{l.get('email_status')}`")
+                        if l.get("contact_audit_note"):
+                            st.markdown(f"**Contact Audit:** *{l.get('contact_audit_note')}*")
                         st.markdown(f"**US Market Footprint:** {l.get('us_presence')}")
                         st.markdown(f"**TVB Strategic Rationale:** *{l.get('tvb_value_alignment')}*")
         else:

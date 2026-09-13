@@ -27,7 +27,7 @@ except ImportError:
 
 from src.tvb_context import TVB_ORBITS, TVB_HUBS, TVB_CRITERIA
 from src.validator import validate_tvb_candidate, parse_funding_amount, is_tech_platform, has_minimal_us_presence
-from src.enrichment import verify_executive_email
+from src.enrichment import verify_executive_email, resolve_executive_contact, check_dns_mx
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -174,14 +174,8 @@ class TVBDiscoveryAgent:
         return f"{clean_comp}.com"
 
     def check_mx_quick(self, domain: str) -> bool:
-        """Quick MX record check."""
-        if not DNS_AVAILABLE or not domain:
-            return False
-        try:
-            records = dns.resolver.resolve(domain, 'MX', lifetime=2.5)
-            return len(records) > 0
-        except Exception:
-            return False
+        """Quick MX record check using unified enrichment validation."""
+        return check_dns_mx(domain)
 
     def crawl_live_feed_deals(self, target_orbit: Optional[str] = None, progress_callback=None) -> List[Dict[str, Any]]:
         """
@@ -241,16 +235,26 @@ class TVBDiscoveryAgent:
                                     if f_match:
                                         founder = self.clean_founder_name(f_match.group(1))
 
-                                # Determine Domain & Verify DNS MX
+                                # Determine Domain & Resolve Executive Contact
                                 domain = self.infer_company_domain(comp_name, soup)
-                                has_mx = self.check_mx_quick(domain)
-
-                                # Skip if founder is not authentically found or domain has no MX
-                                if not founder or not has_mx:
+                                if not domain or not founder:
                                     continue
 
-                                first_name = re.sub(r'[^a-zA-Z]', '', founder.split()[0].lower())
-                                exec_email = f"{first_name}@{domain}"
+                                contact_info = resolve_executive_contact(
+                                    soup=soup,
+                                    text=full_text,
+                                    domain=domain,
+                                    founder_name=founder,
+                                    allow_pattern_inference=True
+                                )
+
+                                if not contact_info.get("verified"):
+                                    continue
+
+                                exec_email = contact_info.get("email", "")
+                                email_status = contact_info.get("status", "Verified (DNS MX Valid)")
+                                contact_source = contact_info.get("source", "direct_extraction")
+                                contact_reason = contact_info.get("reason", "")
 
                                 # Detect Hub / Location
                                 hq_location = "London, UK" if "uk" in link or "uktech" in link else "Europe"
@@ -291,7 +295,9 @@ class TVBDiscoveryAgent:
                                     "executive_name": founder,
                                     "executive_title": "Co-founder & CEO",
                                     "verified_email": exec_email,
-                                    "email_status": "Verified (Live DNS MX Valid)",
+                                    "email_status": email_status,
+                                    "contact_provenance": contact_source,
+                                    "contact_audit_note": contact_reason,
                                     "tvb_value_alignment": f"High alignment for TVB {orbit} & US market access expansion.",
                                     "live_source_url": link,
                                     "is_live_crawled": True,
